@@ -18,6 +18,8 @@
 ## 文档
 
 - 架构占位文档：`docs/architecture.md`
+- 研究记忆文档：`docs/research-memory.md`
+- Agent 研究约束：`AGENTS.md`
 
 ## 里程碑（草案）
 
