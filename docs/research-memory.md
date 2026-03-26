@@ -122,3 +122,80 @@
 
 - 核心问题: 如何兼容不同项目中的 Agent 工作流，同时不把核心层绑死在某一类 Agent 框架上
 - 关键风险: 如果适配接口过早绑定某个客户端协议，迁移成本会很高
+
+## R-0003 调研现有 Agentic Memory 实现并评估 Obsidian 的角色
+
+- 日期: 2026-03-26
+- 目标: 调研当前 Codex、Claude Code 等工作流下已经存在的 Agentic Memory 实现，判断它们与“多专业 Agent + 独立记忆 + 可委派协作 + 跨工作区”目标的贴合度，并推敲 Obsidian 适合承担什么职责
+- 输入:
+  - Claude Code 官方 subagents / memory 文档
+  - Codex 官方 subagents / MCP 文档
+  - MCP 官方 reference servers 中的 Memory server
+  - Memora、mcp-memory-service、Context Portal、Basic Memory、OpenMemory、Graphiti 等项目的一手文档或官方仓库
+- 来源:
+  - https://code.claude.com/docs/en/sub-agents
+  - https://code.claude.com/docs/en/memory
+  - https://developers.openai.com/codex/subagents
+  - https://developers.openai.com/learn/docs-mcp
+  - https://github.com/modelcontextprotocol/servers
+  - https://github.com/agentic-box/memora
+  - https://github.com/doobidoo/mcp-memory-service
+  - https://github.com/GreatScottyMac/context-portal
+  - https://docs.basicmemory.com/
+  - https://docs.basicmemory.com/reference/technical-information
+  - https://docs.mem0.ai/openmemory/overview
+  - https://github.com/getzep/graphiti
+- 动作:
+  - 先确认 Claude Code 和 Codex 自身对 subagent、MCP、持久记忆的原生支持边界
+  - 再收集几类有代表性的 memory 实现，按“工作流贴合度 / 结构化程度 / 跨项目能力 / 人类可审阅性”比较
+  - 最后回到 Obsidian，判断它更适合作为操作性记忆层，还是提炼后的知识层
+- 发现:
+  - Claude Code 是当前原生支持最完整的工作流之一。官方文档明确支持自定义 subagent、subagent 级 `mcpServers`、以及 `user` / `project` / `local` 三种持久记忆作用域。它还支持主线程 agent 协调多个 subagent，并明确区分单 session 的 subagents 与跨 session 协调的 agent teams
+  - Codex 官方文档已经明确支持 subagents、custom agents、并行代理工作流，以及在 custom agent 中挂载专属 `mcp_servers`。但我在官方文档里没有找到类似 Claude Code 那样的“内建 persistent agent memory directory”能力说明。这里的判断是推断：Codex 目前更像“强协调器 + MCP 容器”，长期记忆更适合外接
+  - 官方 MCP 参考仓库已经把 `Memory` 列为 reference server，说明“把 persistent memory 作为 MCP 工具层”已经是社区主流方向之一。但它更像最小参考实现，不足以直接覆盖多专业 Agent 的复杂协作需求
+  - Memora 是目前和目标贴合度较高的一类实现：它明确面向 AI agent 的持久记忆，支持 semantic search、knowledge graph、typed edges、cross-session context，并且官方 README 直接给出 Claude Code 和 Codex CLI 的接入方式。它更接近“通用语义记忆后端”
+  - mcp-memory-service 明确面向多 agent pipeline，强调“memory is shared across all agents and runs”，提供 `X-Agent-ID` 做 agent 身份隔离，具备 knowledge graph、consolidation、REST + MCP 双接口。这是当前最接近“多 agent 共享/隔离并存的运行时记忆服务”的实现之一，但它偏服务化和数据库化
+  - Context Portal（ConPort）更偏“项目工作区记忆库”。它把 decisions、progress、architecture 等上下文放进每工作区一个 SQLite + graph + embedding 的后端，并通过 `workspace_id` 管理多工作区。它非常适合“项目记忆”，但不天然等于“角色化 Agent 记忆”
+  - Basic Memory 提供了非常重要的在先思路：它采取 file-first 架构，把 Markdown 作为 source of truth，数据库只是 secondary index；同时它把 Markdown 中的 entities / observations / relations 解析成语义图，还明确支持 Claude、ChatGPT、Codex、Obsidian。它说明“Markdown + semantic graph + MCP”这条路线是可行的
+  - OpenMemory 更偏“跨客户端共享的个人/用户级记忆层”。它强调 local-first、跨工具共享、统一 memory operations，但其默认抽象更接近“user memory stream”，不直接等于“多个专业 Agent 各自独立又能互调的专业记忆系统”
+  - Graphiti / Zep 代表的是另一类更重型的方案：temporal knowledge graph。它很适合处理随时间变化的事实、冲突、历史状态与生产级检索，但复杂度明显更高，更像底层引擎而不是轻量工作流插件
+  - 目前没有看到哪个现成方案可以“开箱即用”地同时满足下面四件事：多个专业 Agent、每个 Agent 独立记忆、跨工作区复用、subagent 之间高质量协作。现有方案通常只解决其中两到三项，需要组合
+- 候选实现与贴合度判断:
+  - Claude Code 原生 subagent + memory: 对“专业 Agent + 独立记忆 + 委派协作”贴合度最高，但记忆主要还是文件目录级，不是独立的结构化 memory service
+  - Codex 原生 subagent + MCP: 对“多 agent 协调 + 专属工具/MCP”贴合度高，但原生长期记忆能力相对弱，需要外接 memory backend
+  - Memora: 对“通用 Agent 记忆后端”贴合度高，尤其适合 Claude/Codex 这类 MCP 驱动工作流
+  - mcp-memory-service: 对“多 agent 共享服务 + agent 身份隔离 + consolidation”贴合度高，但系统重量更大
+  - ConPort: 对“项目工作区记忆”贴合度高，适合每工作区一份项目知识库
+  - Basic Memory: 对“Markdown 可审阅记忆 + 图化索引 + 人机共编”贴合度高，是 Obsidian 方向的重要参照
+  - OpenMemory: 对“跨客户端个人记忆层”贴合度高，但 role-specific 语义不够强
+- 对 Obsidian 的推敲:
+  - 优势:
+    - 人类可读、可编辑、可审阅，适合作为高价值记忆的最终落点
+    - Wikilink、backlink、图谱、手工提炼能力强，适合做跨项目经验关联和长期知识沉淀
+    - 与 Git、Markdown、知识库工作流天然兼容，便于版本化和人工校正
+    - 如果走类似 Basic Memory 的路线，Obsidian 可以成为 file-first memory layer 的自然承载体
+  - 劣势:
+    - Obsidian 本身不是高并发、强事务、强隔离的多 agent 运行时记忆后端
+    - 多个 subagent 高频写 Markdown 时，冲突、重复、噪音、结构漂移都很容易发生
+    - 当前 CLI 路线依赖桌面端运行，不适合直接被假定为稳定的 server runtime
+    - 原生缺少 agent identity、memory TTL、冲突合并、时序失效、检索重排等运行时记忆机制
+  - 价值判断:
+    - Obsidian 最有价值的角色，不是“热路径上的操作性记忆总线”，而是“可审阅、可提炼、可关联的慢记忆 / 冷记忆层”
+    - 更合理的方向是让结构化 memory backend 负责高频写入、隔离、检索、去重、事件流；让 Obsidian 负责沉淀精选记忆、角色经验手册、项目复盘、跨项目知识关联
+    - 如果强行把 Obsidian 当作唯一 memory backend，最大的风险不是不能做，而是很快会因为噪音和并发写入失控，导致记忆质量下降
+- 假设:
+  - 目标系统最终大概率需要“双层记忆”：一层是面向 Agent 运行时的结构化/可检索记忆，一层是面向人机共编与提炼的 Obsidian 知识层
+  - Claude Code 天然更适合作为第一优先验证对象，因为它已经原生支持 subagent 级 memory；Codex 更适合作为第二验证对象，通过 custom agent + MCP 方式接入同一记忆后端
+  - 如果希望真正支持“多个专业 Agent 相互调用”，应该把角色身份、记忆命名空间和调用关系放在 memory system 外层显式建模，而不是完全依赖某个客户端的内建机制
+- 决策:
+  - 暂不把 Obsidian 视为唯一运行时记忆后端
+  - 暂时把 Obsidian 定位为“提炼后的知识层候选”，不是“原始高频操作记忆层”
+  - 下一轮研究应转向“角色身份 / 记忆命名空间 / 工作区命名空间”三个模型的交叉设计
+- 未解问题:
+  - 一条记忆究竟归属于 agent、workspace、project，还是三者的组合
+  - subagent 之间的调用关系，是直接互调，还是统一由 coordinator 路由
+  - 运行时结构化记忆与 Obsidian 提炼记忆之间，什么触发同步、谁来负责提炼、如何防止噪音上浮
+  - 若 Claude Code 与 Codex 同时接入同一后端，agent identity 和 permission boundary 如何统一
+- 下一步:
+  - 研究轨道 B 与 C 合并推进一次：先定义角色身份模型，再反推最小记忆对象模型
+  - 单独补一轮“Obsidian 作为冷记忆层”的边界研究，验证哪些内容适合沉淀、哪些不适合
