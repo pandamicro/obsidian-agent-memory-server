@@ -382,3 +382,25 @@
 - 下一步:
   - 定义 Portable Agent Contract 的四对象最小模型
   - 单独细化 `Episode` / `Learning` / `Behavior Delta` 的字段边界
+
+## R-0007 将 Portable Agent Contract 落成独立文档
+
+- 日期: 2026-03-26
+- 目标: 将研究结论从日志提升为独立文档，作为后续建模与评审的统一基线
+- 输入:
+  - R-0005 中关于唯一关键问题的结论
+  - R-0006 中关于四对象与记忆分层的阶段性判断
+- 动作:
+  - 新建 `docs/portable-agent-contract.md`
+  - 将四个核心对象的最小模型、边界、关系和非目标统一整理
+  - 保持概念层，不进入 schema 或 API
+- 发现:
+  - 当四对象和边界被写成独立文档后，后续每次讨论都更容易识别是否失焦
+  - `dynamic_memory` 只有放回四对象框架里，才能避免被误当成项目的唯一中心
+- 决策:
+  - 后续关于 Agent 本体的讨论，以 `docs/portable-agent-contract.md` 为主入口
+- 未解问题:
+  - 四对象的最小字段边界还需要逐个细化
+  - `Behavior Delta` 到 `skill_pack update` 的审阅机制尚未定义
+- 下一步:
+  - 先细化 `agent_identity` 的最小字段边界

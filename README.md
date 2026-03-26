@@ -1,24 +1,25 @@
 # obsidian-agent-memory-server
 
-一个基于 Obsidian 文档库的 Agentic Memory Server 起始仓库。
+一个面向可移植 Agent 的专属技能与专属记忆研究仓库。
 
 ## 项目目标
 
-- 让不同 Agent 角色在跨项目工作中持续积累可复用经验
-- 在项目间实现记忆隔离与可控共享
-- 兼容不同项目中的 Agent 工作流
+- 定义可跨项目、跨环境即插即用的 Agent 本体
+- 让 Agent 通过专属记忆持续积累可复用的专业经验
+- 让同一个 Agent 可通过适配层接入不同运行环境，而不依赖特定后端
 
 ## 当前范围（v0）
 
-- 定义最小可行的记忆模型
-- 定义角色与权限边界
-- 提供基础写入与检索能力
-- 建立工作流兼容层的接口约定
+- 定义 Portable Agent Contract 的最小模型
+- 定义 `agent_identity`、`skill_pack`、`dynamic_memory`、`runtime_adapter` 的边界
+- 定义 dynamic memory 中高价值经验的抽象与分层
+- 明确 Obsidian 在系统中的合理职责
 
 ## 文档
 
 - 架构占位文档：`docs/architecture.md`
 - 研究记忆文档：`docs/research-memory.md`
+- Portable Agent Contract：`docs/portable-agent-contract.md`
 - Agent 研究约束：`AGENTS.md`
 
 ## 里程碑（草案）
