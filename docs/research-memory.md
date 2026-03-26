@@ -230,3 +230,36 @@
 - 下一步:
   - 定义 `agent_identity`、`skill_pack`、`memory_namespace`、`adapter_contract` 的最小模型
   - 重新审视 Obsidian 在该收紧边界下到底承担“经验沉淀层”还是“专属记忆镜像层”
+
+## R-0005 以第一性原则识别初始阶段唯一关键问题
+
+- 日期: 2026-03-26
+- 目标: 用第一性原则判断本项目初始阶段必须先研究清楚什么，才能保证后续产出具备真正价值
+- 输入:
+  - 已收紧的项目边界：只关注 Agent 专属技能与专属记忆
+  - 项目目标：产出跨项目、跨环境即插即用的 Agent 员工
+- 动作:
+  - 从最终价值倒推系统最小成立条件
+  - 区分“本质问题”和“实现层问题”
+  - 识别若不先解决会导致全局失焦的单一关键问题
+- 发现:
+  - 这个项目的价值不在“多一个记忆库”，而在“让同一个 Agent 在不同环境中保持连续、自洽、可迁移的专业能力”
+  - 因此最核心的对象不是 Vault、workspace、project、Obsidian、MCP 或某个后端，而是“可移植的 Agent 本体”
+  - 一个可移植的 Agent 本体，至少必须把四类东西分清：`agent_identity`、`skill_pack`、`dynamic_memory`、`runtime_adapter`
+  - 目前真正会让项目失败的，不是存储选型，不是向量检索，不是 Obsidian 集成，而是这四类东西的边界如果不清楚，系统就一定会把环境状态错误地混进 Agent 本体
+  - 一旦 Agent 本体和环境耦合，项目就不可能实现“跨项目、跨环境即插即用”
+- 假设:
+  - 若能先定义出后端无关、环境无关的“可移植 Agent Contract”，后续 Obsidian、MCP、Claude Code、Codex 都只是适配问题
+  - 若不能定义出这个 Contract，后续任何实现都会沦为某个工作流的定制插件，而不是独立产品
+- 决策:
+  - 初始阶段唯一必须优先研究清楚的问题是：
+  - `什么是一个可移植 Agent 的最小契约（Portable Agent Contract），以及哪些信息属于 Agent 本体，哪些信息必须严格留在外部环境？`
+  - 在这个问题清楚之前，不进入详细 schema、不进入 API 设计、不讨论 Obsidian 的具体文件组织
+- 未解问题:
+  - `agent_identity` 的最小必要字段是什么
+  - `skill_pack` 与 `dynamic_memory` 的分界线是什么
+  - 运行时上下文进入 Agent 时，什么可以临时注入，什么绝不能持久化回 Agent 本体
+  - `runtime_adapter` 需要保证哪些最小能力，才能让同一个 Agent 在不同后端行为一致
+- 下一步:
+  - 先定义 Portable Agent Contract 的四个核心对象和边界
+  - 再用这个 Contract 反推 Obsidian 在系统中的合理职责
