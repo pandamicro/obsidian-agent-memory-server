@@ -263,3 +263,122 @@
 - 下一步:
   - 先定义 Portable Agent Contract 的四个核心对象和边界
   - 再用这个 Contract 反推 Obsidian 在系统中的合理职责
+
+## R-0006 调研 Portable Agent Contract 四对象，并重点判断 dynamic_memory 的价值形态与层级
+
+- 日期: 2026-03-26
+- 目标: 在不失焦于 Portable Agent Contract 的前提下，调研 `agent_identity`、`skill_pack`、`dynamic_memory`、`runtime_adapter` 的已有代表性模型，并重点判断 dynamic_memory 中真正有价值的经验应该是什么形态、什么抽象层级、是否需要分层
+- 输入:
+  - Claude Code 官方 subagent / memory 文档
+  - Codex 官方 subagents 文档
+  - Letta / MemGPT / LangMem / Graphiti / Basic Memory / A-MEM / Generative Agents 等一手资料
+- 来源:
+  - https://code.claude.com/docs/en/sub-agents
+  - https://code.claude.com/docs/en/memory
+  - https://developers.openai.com/codex/subagents
+  - https://docs.letta.com/guides/core-concepts/stateful-agents
+  - https://docs.letta.com/guides/core-concepts/memory/memory-blocks
+  - https://docs.letta.com/guides/core-concepts/memory/context-hierarchy/
+  - https://langchain-ai.github.io/langmem/concepts/conceptual_guide/
+  - https://research.google/pubs/generative-agents-interactive-simulacra-of-human-behavior/
+  - https://arxiv.org/abs/2310.08560
+  - https://arxiv.org/abs/2502.12110
+  - https://docs.basicmemory.com/reference/technical-information
+  - https://github.com/getzep/graphiti
+  - https://github.com/doobidoo/mcp-memory-service
+  - https://github.com/agentic-box/memora
+- 动作:
+  - 先用 Claude Code / Codex 官方文档确认现代 Agent 工作流里，什么属于 Agent 配置本体，什么属于外接能力
+  - 再用 Letta、LangMem、Generative Agents、Graphiti、A-MEM、Basic Memory 对比 memory 的常见抽象层次
+  - 最后只回答本项目真正需要的判断：dynamic_memory 应该记什么，不应该记什么，是否需要不同层级
+- 发现:
+  - Claude Code 和 Codex 的官方设计都在隐含地区分四种对象：
+    - `agent_identity`: `name`、`description`、核心行为说明
+    - `skill_pack`: 技能、开发指令、系统提示、工具约束
+    - `runtime_adapter`: `mcp_servers`、工具表面、sandbox/permission/runtime 配置
+    - `memory`: 持久化学习或跨会话积累
+  - 这说明我们的四对象拆分不是拍脑袋，而是与主流 agent workflow 的结构一致
+  - 但在一手资料中，真正高质量的 memory 系统几乎没有把“记忆”当成单层 blob：
+    - Generative Agents 采用 `observations -> reflections -> plans`
+    - LangMem 明确区分 `semantic / episodic / procedural`
+    - Letta / MemGPT 强调 `in-context core memory` 与 `out-of-context archival memory`
+    - Graphiti 明确区分 `episodes`（原始来源）与带有效期的 `facts / relationships`
+    - Basic Memory 区分 `entities / observations / relations`
+    - A-MEM 强调新记忆进入后要生成结构化属性、标签、连接，并让旧记忆持续演化
+  - 这些资料共同指向一个结论：真正有价值的经验不是“原始对话全文”，而是能够改变未来决策质量的、可压缩、可检索、可验证的经验表示
+  - 从第一性原则看，dynamic_memory 的价值标准不应是“记住了多少”，而应是“它是否能在未来环境中稳定提升 Agent 行为”
+- 对四对象的阶段性判断:
+  - `agent_identity`
+    - 定义“这是哪个 Agent”，应该尽量稳定且与环境无关
+    - 它不应该承载大量动态经验，否则身份会漂移
+  - `skill_pack`
+    - 更像静态可分发的专业能力包：角色说明、操作原则、方法模板、默认工具策略
+    - 它应当是可移植资产，不应该被每次运行时随意改写
+  - `runtime_adapter`
+    - 负责把同一个 Agent 接到 Claude Code、Codex、MCP、Obsidian 等不同环境
+    - 它是环境桥接层，不应成为 Agent 本体的一部分
+  - `dynamic_memory`
+    - 是本项目里唯一允许持续演化的“专属经验层”
+    - 它的职责不是保存一切，而是积累未来可复用的、属于这个 Agent 的专业经验
+- 对 dynamic_memory 的关键判断:
+  - 真正有价值的经验，最少应包含三类信息：
+    - `情境`: 遇到了什么类型的问题或触发条件
+    - `策略`: 当时采用了什么判断路径、方法或操作模式
+    - `结果`: 为什么有效、何时失效、可信度如何
+  - 只存事实不够，因为 Agent 需要知道“什么时候用”
+  - 只存案例也不够，因为 Agent 需要知道“可以抽象成什么稳定规律”
+  - 只存规则更不够，因为没有来源和证据，规则会越来越像幻觉
+- 对 dynamic_memory 的推荐抽象:
+  - `Episode`：
+    - 最接近原始经验，但必须经过压缩
+    - 应包含：触发情境、关键判断、采取行动、结果、来源、时间、置信度
+    - 作用：作为证据层和可回放层
+  - `Learning`：
+    - 从多个 episode 中提炼出的稳定模式、偏好、启发式、失败教训
+    - 应包含：结论、适用范围、反例/失效条件、支撑证据引用
+    - 作用：作为 Agent 的主要可检索经验层
+  - `Behavior Delta`：
+    - 会影响 Agent 行为的高价值经验调整，例如“当任务是 X 时优先走 Y 路径”
+    - 它介于 dynamic_memory 与 skill_pack 之间
+    - 不应直接覆盖 skill_pack，而应先作为可审阅的行为增量存在
+- 是否需要不同层级的记忆划分:
+  - 结论：需要，而且这是必要条件，不是优化项
+  - 最少需要两层持久记忆：
+    - `L1 Episode Layer`：保存压缩后的原始经验与证据
+    - `L2 Learning Layer`：保存提炼后的规律、启发式、偏好和反模式
+  - 很可能还需要第三层，但它不一定属于 dynamic_memory 本体：
+    - `L3 Behavioral Promotion Layer`：将被反复验证的 learning 提升为长期行为规则或 skill patch
+    - 这一层更接近 skill evolution，而不是普通 memory storage
+  - 运行时 scratch / working memory 当然存在，但它属于运行时上下文，不应直接纳入本项目要解决的“专属持久记忆”核心
+- 为什么必须分层:
+  - 不分层时，所有内容都会混在一个桶里，结果是：
+    - 检索时噪音过高
+    - 规则与案例互相污染
+    - Agent 难以判断当前读到的是“事实”“经验”还是“应遵循的行为”
+  - 分层后，系统才有可能做到：
+    - 用 episode 提供证据与可追溯性
+    - 用 learning 提供高效决策支持
+    - 用 promotion 层控制哪些经验值得固化进长期行为
+- 对 Obsidian 的影响:
+  - 在这套分层下，Obsidian 更适合承接：
+    - 高价值 `Learning`
+    - 已稳定的 `Behavior Delta`
+    - Agent 的长期经验手册
+  - Obsidian 不适合直接承接高频 `Episode` 热写入，除非中间有压缩、筛选、合并和节流机制
+- 假设:
+  - 本项目最终应把 dynamic_memory 设计成“以 Learning 为主检索对象，以 Episode 为证据后备层”的结构
+  - skill_pack 不应被 runtime 自动直接改写；更合理的流程是 episode -> learning -> reviewed behavior delta -> skill pack update
+- 决策:
+  - 下一轮建模不再问“记忆存哪里”，而是先定义：
+    - `Episode` 最小字段
+    - `Learning` 最小字段
+    - `Behavior Delta` 与 `skill_pack` 的分界线
+  - `dynamic_memory` 的中心对象优先设为 `Learning`，而不是原始日志
+- 未解问题:
+  - 一个 learning 需要多少 episode 证据才有资格升级为 behavior delta
+  - 是否需要显式的 `confidence` / `validity` / `last_verified_at` 字段
+  - Agent 在不同环境里学到的 episode，哪些可以跨环境迁移，哪些只能局部适用
+  - Obsidian 是只镜像 `Learning` / `Behavior Delta`，还是也允许低频落地精选 `Episode`
+- 下一步:
+  - 定义 Portable Agent Contract 的四对象最小模型
+  - 单独细化 `Episode` / `Learning` / `Behavior Delta` 的字段边界
