@@ -853,3 +853,46 @@
 - 下一步:
   - 定义反馈聚合与状态变更阈值
   - 然后回到 `agent_identity`
+
+## R-0019 按 dynamic-memory 标准反评 case，并反向评估文章指导性
+
+- 日期: 2026-03-27
+- 目标: 用当前 `dynamic-memory.md` 的标准重新评估刚提炼出的 case，并判断知乎文章对当前设计阶段的指导性是否足够
+- 输入:
+  - `docs/cases/2026-03-27-research-agent-memory-case.md`
+  - 当前 `docs/portable-agent-contract/dynamic-memory.md`
+  - 本次会话中读取的知乎文章结论
+- 动作:
+  - 按 `Episode / feedback_object / Learning / Behavior Delta` 四层标准回评该 case
+  - 单独评估知乎文章在当前阶段的指导边界
+  - 将结论直接回写到 case 文档中
+- 发现:
+  - case 中的大部分 `Episode` 候选是成立的，但若按严格 schema 入库，仍需补齐 `decision_path / source / timestamp / confidence`
+  - `feedback_object` 候选总体可用，但环境结果型与行为型反馈明显强于纯显式评价
+  - `Learning` 候选中只有一部分足够稳，另一些更像协作经验或场景化经验
+  - `Behavior Delta` 候选目前仍然证据不足，无法安全静态化
+  - 知乎文章对以下层面帮助明显：
+    - 记忆分层
+    - 生命周期操作
+    - 人类记忆类比
+    - “分而治之”的工程方向
+  - 但它对以下层面明显不够：
+    - 数据准入标准
+    - 反馈闭环
+    - feedback object 建模
+    - 规则挂接
+    - 状态变更阈值
+- 假设:
+  - 当前阶段更需要把知乎文章视为概念启发源，而不是规则设计基线
+- 决策:
+  - 在 case 文档中补入：
+    - `按 dynamic-memory 标准反评`
+    - `对知乎文章指导性的反向评估`
+  - 将知乎文章的定位固定为：
+    - 适合作为 `概念启发源`
+    - 不适合作为 `规则设计基线`
+- 未解问题:
+  - 未来是否需要对更多文章或论文做同类“反向评估”，建立资料分级
+- 下一步:
+  - 定义反馈聚合与状态变更阈值
+  - 然后回到 `agent_identity`
