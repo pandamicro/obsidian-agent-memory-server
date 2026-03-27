@@ -894,3 +894,34 @@
 - 下一步:
   - 定义反馈聚合与状态变更阈值
   - 然后回到 `agent_identity`
+
+## R-0020 以框架方式定义 feedback aggregation 与 state transition threshold
+
+- 日期: 2026-03-27
+- 目标: 在不冻结算法和数值阈值的前提下，为 `dynamic_memory` 补上反馈聚合与状态变化门槛的基础框架
+- 输入:
+  - 当前 `dynamic-memory.md` 中已经存在的 `feedback_object`、规则挂接、晋升/失效/反思规则
+  - R-0019 中关于“第一阶段提炼框架已足够，但稳定判定框架仍不足”的结论
+- 动作:
+  - 在 `dynamic-memory.md` 中新增：
+    - `feedback aggregation`
+    - `state transition threshold`
+  - 两部分都只定义目标、最小输入/输出、原则与非目标
+  - 刻意不引入固定权重、数值公式或后端绑定实现
+- 发现:
+  - 当前最需要的不是“算得更精确”，而是先把判断链路补完整
+  - `feedback aggregation` 与 `state transition threshold` 必须分开：
+    - aggregation 解决“反馈整体说明了什么”
+    - threshold 解决“这些说明是否足以触发状态变化”
+  - 用 `supporting / conflicting / insufficient` 和 `ready / hold / review / block` 这类条件型输出，足以支撑第一阶段框架，又不会过早冻结实现
+- 假设:
+  - 只要先把这两层抽象补齐，后续无论是规则实现、人工审阅还是半自动策略，都有稳定挂点
+- 决策:
+  - 将 `feedback aggregation` 固定为方向性判断框架，而不是评分系统
+  - 将 `state transition threshold` 固定为条件门槛框架，而不是数值阈值表
+- 未解问题:
+  - 后续是否需要将不同对象类型的 threshold 再拆成独立子文档
+  - 冲突反馈在多大程度上默认进入 `review` 而不是 `hold`
+- 下一步:
+  - 如继续细化，应先做“反馈冲突处理与检索可见性”的框架
+  - 然后回到 `agent_identity`
