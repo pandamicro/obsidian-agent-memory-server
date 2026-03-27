@@ -825,3 +825,31 @@
 - 下一步:
   - 再单独定义反馈聚合与状态变更阈值
   - 然后回到 `agent_identity`
+
+## R-0018 将本次会话沉淀为可复盘 memory case
+
+- 日期: 2026-03-27
+- 目标: 把本次连续研究会话整理成一个可复盘的 memory case，作为未来分析 `Episode / feedback_object / Learning / Behavior Delta` 提炼质量的样本
+- 输入:
+  - 本次会话中的边界收敛、问题识别、纠偏、浏览器读取、反馈前置、数据准入、feedback 收缩与规则挂接等关键动作
+- 动作:
+  - 新建 `docs/cases/2026-03-27-research-agent-memory-case.md`
+  - 将样本按四层结构整理：
+    - `Episode Candidates`
+    - `Feedback Candidates`
+    - `Learning Candidates`
+    - `Behavior Delta Candidates`
+  - 显式列出“哪些内容不应进入长期记忆”
+- 发现:
+  - 这次会话已经足以生成一批高质量 `Episode` 与 `feedback_object` 候选
+  - 多个 `Learning` 已经具备较强的可复用性
+  - 但绝大多数内容仍不足以直接晋升到 `Behavior Delta`，因为跨任务累计反馈还不够
+- 假设:
+  - 这种真实会话 case，比单纯理论文档更适合未来检验当前记忆模型是否可用
+- 决策:
+  - 将该案例保存在仓库内，作为后续 memory 蒸馏与反馈聚合研究的样本
+- 未解问题:
+  - 未来是否需要建立多 case 对比目录，用于比较不同任务类型下的 Episode 与反馈质量
+- 下一步:
+  - 定义反馈聚合与状态变更阈值
+  - 然后回到 `agent_identity`
