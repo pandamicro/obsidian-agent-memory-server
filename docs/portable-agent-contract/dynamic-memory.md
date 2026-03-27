@@ -332,20 +332,44 @@ Agent 在实际运行过程中能够稳定获取这类数据。
   - 反馈作用的目标对象引用，例如某个 `Episode`、`Learning`、`Behavior Delta`
 - `signal_type`
   - 反馈信号类型，例如 `explicit / implicit_behavior / environmental_outcome / review_trace`
-- `source`
-  - 反馈来源，例如用户、审阅者、下游工具链、测试系统、调度器
 - `polarity`
   - 反馈方向，例如 `positive / negative / mixed / neutral`
-- `strength`
-  - 反馈强度，用于区分弱提示和强证据
-- `rationale`
-  - 对反馈含义的简要说明，回答“为什么这条反馈成立”
 - `evidence_refs`
   - 指向 trace、测试结果、diff、评论、运行日志等证据
 - `observed_at`
   - 反馈被观察到的时间
+
+以上字段是第一阶段必须保留的最小核心。
+
+原因是它们分别对应了四条数据准入标准：
+
+- `signal_type` / `observed_at`
+  - 支撑 `observable`
+- `target_ref`
+  - 支撑 `linkable`
+- `polarity`
+  - 支撑 `evaluatable`
+- `evidence_refs`
+  - 支撑 `distillable`
+
+### 可选扩展
+
+以下字段暂不作为第一阶段必需字段，而是按需扩展：
+
+- `source`
+  - 在同一类反馈可能来自多个渠道时再显式建模
+- `strength`
+  - 在需要聚合多条反馈时再引入
+- `rationale`
+  - 在需要人工复核或解释时再引入
 - `scope`
-  - 反馈的适用范围，例如一次任务、某类任务、某个环境类别
+  - 在需要表达“只对某类环境成立”时再引入
+
+将这些字段后置的原因很直接：
+
+- 它们有价值，但不是所有运行环境都能稳定提供
+- 过早把它们做成硬性字段，会让 `feedback_object` 再次膨胀
+- 第一阶段更重要的是先证明最小闭环成立
 
 ### 边界
 
@@ -383,7 +407,13 @@ Agent 在实际运行过程中能够稳定获取这类数据。
 2. 能区分反馈是正向、负向还是混合
 3. 能追溯反馈来自什么证据
 
-在此基础上，后续再考虑复杂的加权、聚合和统计策略。
+在此基础上，后续再考虑：
+
+- 来源区分
+- 强度加权
+- 范围限制
+- 解释文本
+- 统计聚合策略
 
 ## 晋升规则
 

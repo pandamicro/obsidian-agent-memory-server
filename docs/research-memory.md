@@ -747,3 +747,46 @@
 - 下一步:
   - 基于数据准入标准回看 `feedback_object` 是否需要收缩字段
   - 再将 `feedback_object` 挂接回 `dynamic_memory` 的晋升与失效规则
+
+## R-0016 基于数据准入标准收缩 feedback object 字段
+
+- 日期: 2026-03-27
+- 目标: 用 `observable / linkable / evaluatable / distillable` 四条准入标准反向检查 `feedback_object`，收缩到更稳的第一阶段最小模型
+- 输入:
+  - R-0013 中定义的 `feedback_object` 初版字段
+  - R-0015 中定义的数据准入标准
+- 动作:
+  - 逐个审视 `feedback_object` 字段是否属于第一阶段必需
+  - 将不能稳定跨环境提供、或更像后续聚合层字段的内容降级为可选扩展
+  - 在 `dynamic-memory.md` 中明确“核心字段”与“可选扩展”的区别
+- 发现:
+  - `target_ref / signal_type / polarity / evidence_refs / observed_at` 已足以支撑第一阶段闭环
+  - `source / strength / rationale / scope` 都有价值，但并非所有环境都能稳定提供
+  - 如果把这些扩展字段过早做成硬性要求，会产生两个问题：
+    - 不同运行环境难以对齐
+    - `feedback_object` 再次膨胀成半个 observability schema
+  - 因此更合理的做法是：
+    - 第一阶段只保留最小核心字段
+    - 将来源、强度、范围和解释文本后置为可选扩展
+- 假设:
+  - 第一阶段只要能区分“反馈作用于谁、反馈方向如何、证据是什么、何时发生”，就足以支撑记忆判断闭环
+  - 多条反馈聚合、加权、范围修正等问题可以留到后续规则层解决
+- 决策:
+  - 将 `feedback_object` 的第一阶段核心字段收缩为：
+    - `feedback_id`
+    - `target_ref`
+    - `signal_type`
+    - `polarity`
+    - `evidence_refs`
+    - `observed_at`
+  - 将以下字段后置为可选扩展：
+    - `source`
+    - `strength`
+    - `rationale`
+    - `scope`
+- 未解问题:
+  - 在缺少 `strength` 的情况下，多条弱正反馈如何与单条强负反馈比较
+  - `source` 后置后，是否会影响后续对“用户反馈”和“系统反馈”的加权差异
+- 下一步:
+  - 将收缩后的 `feedback_object` 挂接回 `dynamic_memory` 的晋升与失效规则
+  - 再回到 `agent_identity`
