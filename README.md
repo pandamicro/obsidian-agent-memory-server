@@ -11,7 +11,7 @@
 ## 当前范围（v0）
 
 - 定义 Portable Agent Contract 的最小模型
-- 定义 `agent_identity`、`skill_pack`、`dynamic_memory`、`runtime_adapter` 的边界
+- 定义 `agent_identity`、`skill_pack`、`dynamic_memory`、`adapter_contract` 的边界
 - 定义 dynamic memory 中高价值经验的抽象与分层
 - 明确 Obsidian 在系统中的合理职责
 
@@ -19,7 +19,8 @@
 
 - 架构占位文档：`docs/architecture.md`
 - 研究记忆文档：`docs/research-memory.md`
-- Portable Agent Contract：`docs/portable-agent-contract.md`
+- Portable Agent Contract：`docs/portable-agent-contract.md`（主入口）
+- 子文档目录：`docs/portable-agent-contract/`
 - Agent 研究约束：`AGENTS.md`
 
 ## 里程碑（草案）

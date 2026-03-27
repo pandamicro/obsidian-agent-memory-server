@@ -659,3 +659,37 @@
 - 下一步:
   - 将 `feedback_object` 挂接回 `dynamic_memory` 的晋升与失效规则
   - 再回到 `agent_identity`
+
+## R-0014 拆分 Portable Agent Contract 为主文档与子文档
+
+- 日期: 2026-03-27
+- 目标: 将不断扩大的 `Portable Agent Contract` 从单文件结构拆成稳定主入口 + 子文档，降低后续研究和设计迭代的维护成本
+- 输入:
+  - 当前 `docs/portable-agent-contract.md` 已同时承载总原则、对象定义、记忆规则、反馈模型
+  - README 与研究记录中对主入口文档的现有引用
+- 动作:
+  - 保留 `docs/portable-agent-contract.md` 作为唯一主入口
+  - 新建 `docs/portable-agent-contract/` 子目录
+  - 按对象边界拆分为：
+    - `agent-identity.md`
+    - `skill-pack.md`
+    - `dynamic-memory.md`
+    - `adapter-contract.md`
+  - 将主文档改为导航页，只保留总目标、顶层边界、四对象关系、反馈闭环和阅读顺序
+  - 同步更新 README 中的文档入口说明，并修正 `runtime_adapter` 的旧表述
+- 发现:
+  - 主入口路径必须保持稳定，否则会影响已有研究记录、README 和后续引用
+  - 拆分时最自然的切法不是按“研究轮次”，而是按“对象边界”
+  - `dynamic_memory` 仍然是内容最重的子文档，因为分层、反馈、晋升、失效和反思触发都属于同一对象边界
+  - `feedback_object` 继续留在 `dynamic-memory.md` 中是合理的，因为它是支持对象，而不是新的顶层对象
+- 假设:
+  - 后续只要保持“主入口稳定、细节下沉”的原则，文档规模继续增长也不会再次失控
+- 决策:
+  - `docs/portable-agent-contract.md` 固定为主文档
+  - 对象细节全部进入子文档
+  - README 中显式标注主入口和子文档目录
+- 未解问题:
+  - 未来是否需要再新增“状态机/规则专门子文档”，还是继续保持对象内聚
+- 下一步:
+  - 将 `feedback_object` 挂接回 `dynamic_memory` 的晋升与失效规则
+  - 再回到 `agent_identity`
