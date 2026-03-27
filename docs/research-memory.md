@@ -492,3 +492,46 @@
 - 下一步:
   - 继续细化 `agent_identity`
   - 单独定义 `dynamic_memory` 的触发条件与晋升规则
+
+## R-0010 补充互联网一手资料并校准记忆形成策略
+
+- 日期: 2026-03-27
+- 目标: 在进入细化设计前，继续用互联网一手资料校准三个问题：记忆是否必须分类型、记忆形成是否应区分热路径与后台反思、Obsidian 在体系中是否更适合做文件型知识层
+- 输入:
+  - LangMem 官方概念文档
+  - Letta 官方 memory blocks 文档
+  - Basic Memory 官方技术文档
+  - Claude Code 官方 memory 文档
+  - Codex / OpenAI MCP 官方文档
+  - A-MEM / MemOS 等论文摘要
+- 动作:
+  - 检索并筛选只会影响当前边界判断的一手资料
+  - 对照已有 `Portable Agent Contract`，判断哪些结论应进入主文档，哪些只保留在研究日志
+  - 重点审视“Agent 专属记忆”和“工作区/后端记忆”的边界
+- 发现:
+  - LangMem 明确把长期记忆区分为 `semantic / episodic / procedural`，并强调高质量记忆系统通常是 application-specific，这支持我们继续坚持“Agent 专属 contract 优先于通用大而全 memory 平台”
+  - LangMem 同时区分了 `hot path` 与 `background` 的记忆形成方式，这对当前项目非常关键：
+    - 运行中更适合捕获少量强信号 `Episode`
+    - `Learning` 与 `Behavior Delta` 更适合通过后台反思生成
+  - Letta 的 memory blocks 说明“始终注入上下文的共享块”是一个成熟模式，但这类机制更接近运行时上下文层或共享状态层，不等于可移植的 Agent 专属长期记忆
+  - Claude Code 官方 memory 明确区分 `user / project / local` 三种记忆位置，这恰好反证了为什么本项目不能依赖宿主工作区或特定后端的内建 memory：这些 memory 天生绑定环境或机器
+  - Basic Memory 的技术路线说明，`Markdown files as source of truth + database as secondary index` 是可行的，这进一步强化了 Obsidian 的最佳位置：
+    - 不是高频运行时主存储
+    - 而是稳定经验对象的人类可读沉淀层
+  - MemOS 代表的是更大的问题空间，它尝试同时覆盖 plaintext / activation / parameter memory，这反而说明我们当前把 scope 限制在外挂长期记忆是正确的，否则项目会迅速膨胀成 memory OS
+  - A-MEM 继续支持一条判断：当记忆需要上下文描述、链接和演化时，卡片化、链接化的知识表示是有价值的，这和 Obsidian 的笔记网络天然相容
+- 假设:
+  - 当前项目的第一阶段，不需要先决定向量库、图数据库或具体索引结构，只需要保证 `Episode / Learning / Behavior Delta` 的对象边界和形成策略成立
+  - 一旦形成策略被定义清楚，Obsidian 是否作为文件型知识层、以及 secondary index 如何实现，都可以被后置
+- 决策:
+  - 在主文档里补入 `dynamic_memory` 的 `hot path formation / background formation` 区分
+  - 明确 Obsidian 更适合作为文件型知识层，而不是高频运行时主存储
+  - 将宿主工作区或后端内建 memory 视为可选输入源，而不是本项目的持久化依赖
+- 未解问题:
+  - `Episode` 的热写入阈值应如何定义，才能避免噪音进入长期记忆链路
+  - `Learning` 的验证周期与失效策略应如何定义
+  - Obsidian 文件型知识层与运行时记忆层之间需要单向同步还是双向修订
+- 下一步:
+  - 细化 `agent_identity`
+  - 细化 `dynamic_memory` 的晋升与失效规则
+  - 单独评估 Obsidian 作为文件型知识层时的写入节奏与冲突控制
