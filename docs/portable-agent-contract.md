@@ -183,6 +183,44 @@
 - 承接“经验是否值得升级为长期行为规则”这一判断
 - 作为 `dynamic_memory` 与 `skill_pack` 之间的缓冲层
 
+#### 生命周期操作
+
+`dynamic_memory` 不只是存储结构，还需要一套最小生命周期操作。
+
+建议保留以下六类操作：
+
+- `encode`
+  - 从运行过程识别值得保留的经验线索，并压缩成 `Episode`
+- `store`
+  - 将 `Episode`、`Learning`、`Behavior Delta` 以可追溯形式持久化
+- `retrieve`
+  - 按情境、任务类型、失败模式或证据关联检索可用经验
+- `consolidate`
+  - 将多个 `Episode` 提炼成更稳定的 `Learning`
+- `reconsolidate`
+  - 在新证据到来后修正已有 `Learning` 或 `Behavior Delta`
+- `reflect`
+  - 主动回顾高价值经验，判断哪些值得升级、降级、合并或废弃
+
+推荐的最小流水线：
+
+`encode -> Episode -> consolidate -> Learning -> reviewed Behavior Delta -> skill_pack update`
+
+其中 `retrieve` 会作用于整个过程，`reconsolidate` 和 `reflect` 用于防止记忆老化、误导或重复堆积。
+
+#### 范围限定
+
+本项目当前只关注 `Agent 可外化、可迁移、可审阅的长期专属记忆`。
+
+明确不纳入当前核心范围的包括：
+
+- 上下文窗口中的工作记忆
+- 模型参数内部的隐式记忆
+- 通用知识库或项目知识库
+- 纯运行时 scratchpad
+
+这意味着本项目里的 `dynamic_memory`，默认是 Agent 专属的外挂长期记忆层，而不是对整个认知系统做全覆盖建模。
+
 #### 边界
 
 `dynamic_memory` 是 Agent 的专属经验，不是工作区日志，也不是项目状态库，更不是通用知识库。

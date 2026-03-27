@@ -418,7 +418,9 @@
   - 重新审视 `runtime_adapter` 的命名与归属
   - 对比显性/隐性记忆与当前 `Episode / Learning / Behavior Delta` 模型的映射关系
   - 重新定义“知识”和“经验”在本项目中的边界
+  - 通过已安装的 `chrome-devtools-mcp` 和本机 Chrome 实际打开知乎文章，尝试读取正文
 - 发现:
+  - 知乎文章 `https://zhuanlan.zhihu.com/p/1940091301249909899` 在本机浏览器自动读取时返回 `40362` 异常限制提示，未能获取正文，因此该链接未作为证据源使用
   - 用户指出的问题是对的：如果把“具体 adapter 实现”算作 Agent 私有资产，会把环境层错误混入 Agent 本体
   - 更准确的对象不是 `runtime_adapter`，而是 `adapter_contract`
   - `adapter_contract` 属于 Agent 本体，因为 Agent 需要声明自己依赖什么抽象能力
@@ -447,3 +449,46 @@
 - 下一步:
   - 细化 `agent_identity` 最小字段边界
   - 细化 `adapter_contract` 的能力声明格式
+
+## R-0009 通过已登录浏览器补充知乎文章信息
+
+- 日期: 2026-03-27
+- 目标: 补充用户提供的知乎文章信息，验证其是否能为 `Portable Agent Contract` 尤其是 `dynamic_memory` 提供有效启发
+- 输入:
+  - 知乎文章《万字解析 Agent Memory 实现》
+  - 已安装的 `chrome-devtools-mcp`
+  - 用户本机已打开且可正常阅读该文章的 Chrome 会话
+- 动作:
+  - 全局安装并校验 `chrome-devtools-mcp`
+  - 先尝试直接通过浏览器自动读取正文，遭遇知乎反抓取
+  - 改为复用本机 Chrome 已登录上下文的配置，启动可调试副本浏览器
+  - 通过 DevTools 连接、页面快照和 DOM 提取读取文章标题、章节结构与关键段落
+- 发现:
+  - 文章正文可成功读取，之前失败的原因主要是自动化访问路径触发了知乎的防抓取，而不是文章本身不可达
+  - 文章对本项目最有价值的增量，不是具体产品盘点，而是三组抽象：
+    - 记忆操作不只是 `encode / store / retrieve`，还应明确 `consolidate / reconsolidate / reflect`
+    - 记忆内容可区分为经历、知识、技能，这与当前 `Episode / Learning / Behavior Delta` 分层是可对齐的
+    - Agent Memory 的工程趋势是“分而治之”，即分层管理、组合多种存储结构、按场景优化检索
+  - 文章同时强调了上下文、LLM 参数、外挂存储这三类“记忆区”，这反过来帮助我们收紧本项目边界：
+    - 本项目当前不做上下文窗口管理
+    - 本项目当前不做参数记忆
+    - 本项目聚焦 Agent 专属的外挂长期记忆
+  - 文章中的显式/隐式记忆类比支持当前判断：
+    - `Episode / Learning` 更适合作为显性、可解释、可审阅的记忆层
+    - `Behavior Delta` 更像“向技能程序化迁移”的中间层，而不是直接黑盒化的隐式记忆
+  - 文章列举的 `MemoryBank / LETTA / ZEP / A-MEM / MEM0 / MemOS / MIRIX` 说明一点：现有系统的能力越来越强，但复杂度也迅速上升
+  - 对本项目而言，这强化了一个约束：初始阶段应先证明“可移植 Agent 专属记忆 contract”成立，而不是一开始复制全能 memory OS
+- 假设:
+  - 只要先把记忆生命周期和分层边界定义清楚，底层是否使用图、向量或多级摘要，可以作为后续实现策略而非先决条件
+  - 对本项目第一阶段而言，文本化 `Episode / Learning` + 审阅态 `Behavior Delta` 已足以支撑有效验证
+- 决策:
+  - 将知乎文章作为“浏览器验证后可用的补充参考源”，但不提升为唯一理论基线
+  - 在 `Portable Agent Contract` 中补入 `dynamic_memory` 的最小生命周期操作
+  - 明确本项目当前作用域为 Agent 专属外挂长期记忆，不覆盖工作记忆与参数记忆
+- 未解问题:
+  - `reflect` 应该由 Agent 自主触发、调度器触发，还是人工触发
+  - `consolidate` 与 `reconsolidate` 的触发阈值如何定义，才能避免记忆抖动
+  - 当 `Learning` 足够稳定时，何时应升级为 `skill_pack` 的一部分
+- 下一步:
+  - 继续细化 `agent_identity`
+  - 单独定义 `dynamic_memory` 的触发条件与晋升规则
