@@ -332,6 +332,81 @@
 
 因此，记忆系统的核心不是“能写入多少经验”，而是“能为多少经验拿到可信反馈”。
 
+#### `feedback_object`（支持对象）
+
+`feedback_object` 不是第五个核心对象，而是服务 `dynamic_memory` 的支持对象。
+
+它回答的问题是：
+
+`某次运行之后，我们拿到了什么反馈，它作用于哪个记忆对象，这个反馈有多可信？`
+
+#### 作用
+
+- 让 `Episode / Learning / Behavior Delta / skill_pack update` 的判断有外部依据
+- 把分散的反馈信号统一成可比较、可追溯的对象
+- 为晋升、修正、降级、失效提供结构化输入
+
+#### 最小组成
+
+- `feedback_id`
+  - 反馈对象的唯一标识
+- `target_ref`
+  - 反馈作用的目标对象引用，例如某个 `Episode`、`Learning`、`Behavior Delta`
+- `signal_type`
+  - 反馈信号类型，例如 `explicit / implicit_behavior / environmental_outcome / review_trace`
+- `source`
+  - 反馈来源，例如用户、审阅者、下游工具链、测试系统、调度器
+- `polarity`
+  - 反馈方向，例如 `positive / negative / mixed / neutral`
+- `strength`
+  - 反馈强度，用于区分弱提示和强证据
+- `rationale`
+  - 对反馈含义的简要说明，回答“为什么这条反馈成立”
+- `evidence_refs`
+  - 指向 trace、测试结果、diff、评论、运行日志等证据
+- `observed_at`
+  - 反馈被观察到的时间
+- `scope`
+  - 反馈的适用范围，例如一次任务、某类任务、某个环境类别
+
+#### 边界
+
+`feedback_object` 记录的是“反馈判断”，不是原始运行轨迹本身。
+
+它应当引用证据，而不是复制整段 transcript、整份日志或整份工作区状态。
+
+#### 禁止混入
+
+- 全量聊天记录
+- 全量工具调用 trace
+- 工作区脏状态快照
+- 仅对某个特定后端实现有意义、无法迁移的私有字段
+
+#### 与记忆对象的关系
+
+- `Episode`
+  - 反馈判断这个案例是否值得进入长期链路
+- `Learning`
+  - 反馈判断这条经验是否真的提升后续决策
+- `Behavior Delta`
+  - 反馈判断这个行为变化是否值得保留或推广
+- `skill_pack update`
+  - 反馈判断某条行为规则是否已稳定到可以静态化
+
+一个目标对象可以关联多个 `feedback_object`。
+
+系统不应依赖单条反馈做最终判断，而应允许累计多条反馈后更新目标对象状态。
+
+#### 最小判断原则
+
+对于 `feedback_object`，第一阶段只要求做到三件事：
+
+1. 能区分反馈作用于谁
+2. 能区分反馈是正向、负向还是混合
+3. 能追溯反馈来自什么证据
+
+在此基础上，后续再考虑复杂的加权、聚合和统计策略。
+
 #### 晋升规则
 
 `dynamic_memory` 不应默认“只增不改”。不同层之间需要明确晋升门槛。

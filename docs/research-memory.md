@@ -621,3 +621,41 @@
 - 下一步:
   - 单独定义 `feedback object` 的最小模型
   - 再回到 `agent_identity`
+
+## R-0013 定义 feedback object 的最小模型
+
+- 日期: 2026-03-27
+- 目标: 把“反馈机制”收敛成一个可移植的支持对象，明确它最少由什么组成、作用于谁、哪些内容绝不能混入
+- 输入:
+  - R-0012 中关于反馈优先级与最小闭环的结论
+  - 当前 `Portable Agent Contract` 的四对象边界
+  - 之前调研得到的一手资料中关于运行轨迹、结果反馈、人工复核的共识
+- 动作:
+  - 决定 `feedback_object` 是否应成为第五个核心对象
+  - 定义 `feedback_object` 的最小字段与边界
+  - 明确它与 `Episode / Learning / Behavior Delta / skill_pack update` 的关系
+- 发现:
+  - `feedback_object` 不应升级为第五个核心对象，因为它不定义 Agent 本体，而是为 `dynamic_memory` 提供判断依据
+  - 它更像一个支持对象，位于“运行反馈”和“记忆状态更新”之间
+  - 如果没有统一的 `feedback_object`，不同来源的反馈会散落在评论、trace、测试结果和人工笔注里，无法稳定驱动记忆演化
+  - 但如果把原始运行轨迹直接当反馈对象，又会把大量不可迁移噪音灌进 Agent 记忆层
+  - 因此 `feedback_object` 必须是“结构化判断 + 证据引用”，而不是“原始日志副本”
+- 假设:
+  - 对第一阶段而言，`target_ref / signal_type / polarity / evidence_refs` 已足以支撑有效的反馈闭环
+  - 更复杂的打分、权重、聚合规则可以后置
+- 决策:
+  - 将 `feedback_object` 定义为 `dynamic_memory` 的支持对象，而不是第五个核心对象
+  - 主文档中加入 `feedback_object` 的：
+    - 作用
+    - 最小组成
+    - 边界
+    - 禁止混入
+    - 与记忆对象的关系
+  - 明确系统应支持“一个目标对象关联多条反馈”，而不是依赖单条反馈做最终判断
+- 未解问题:
+  - `strength` 应该是离散等级还是连续分值
+  - `scope` 应如何表达“某类环境有效、另一类环境无效”
+  - 多条 `feedback_object` 如何在不绑定具体后端的前提下被聚合
+- 下一步:
+  - 将 `feedback_object` 挂接回 `dynamic_memory` 的晋升与失效规则
+  - 再回到 `agent_identity`
