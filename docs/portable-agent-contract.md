@@ -26,14 +26,14 @@
 1. `agent_identity`
 2. `skill_pack`
 3. `dynamic_memory`
-4. `runtime_adapter`
+4. `adapter_contract`
 
 其中：
 
 - `agent_identity` 定义“这是哪个 Agent”
 - `skill_pack` 定义“这个 Agent 静态具备什么专业能力”
 - `dynamic_memory` 定义“这个 Agent 通过经验持续学到了什么”
-- `runtime_adapter` 定义“这个 Agent 如何被挂接到具体运行环境”
+- `adapter_contract` 定义“这个 Agent 需要什么样的运行时适配能力，才能被挂接到具体环境”
 
 ## 最小模型
 
@@ -195,16 +195,26 @@
 - 项目待办
 - 与 Agent 专业能力无关的杂项事实
 
-### 4. `runtime_adapter`
+### 4. `adapter_contract`
 
 #### 作用
 
-定义同一个 Agent 如何接入 Claude Code、Codex、MCP、Obsidian 或其他运行环境。
+定义同一个 Agent 需要什么样的运行时适配能力，才能接入 Claude Code、Codex、MCP、Obsidian 或其他运行环境。
+
+这里强调的是 `Contract`，不是具体适配器实现。
+
+- `adapter_contract` 属于 Agent 本体模型的一部分
+- 具体的 adapter implementation 属于外部环境，可以被多个 Agent 共享
+
+换句话说：
+
+- Agent 需要声明“我要求什么能力表面”
+- 环境负责提供“哪个适配器实例来满足这些能力”
 
 #### 最小组成
 
-- `adapter_id`
-- `backend_kind`
+- `adapter_kind`
+- `required_capabilities`
 - `capability_map`
 - `context_injection_policy`
 - `persistence_policy`
@@ -212,13 +222,14 @@
 
 #### 边界
 
-`runtime_adapter` 是桥接层，不是 Agent 本体。它负责翻译环境，不负责重新定义 Agent 身份、技能或记忆本体。
+`adapter_contract` 描述桥接要求，但不等于桥接实现本身。它不能重新定义 Agent 身份、技能或记忆本体。
 
 #### 禁止混入
 
 - Agent 专属经验本体
 - 长期角色定义
 - 工作区专属脏状态被错误持久化回 Agent
+- 某个具体部署环境的本地路径或硬编码实例信息
 
 ## 四对象关系
 
@@ -226,7 +237,7 @@
 
 `agent_identity` 决定 Agent 的连续性。
 
-`skill_pack`、`dynamic_memory`、`runtime_adapter` 都服务于同一个身份，但都不能反向篡改身份定义。
+`skill_pack`、`dynamic_memory`、`adapter_contract` 都服务于同一个身份，但都不能反向篡改身份定义。
 
 ### 关系 2：静态与动态分离
 
@@ -237,9 +248,9 @@
 
 ### 关系 3：环境与本体分离
 
-`runtime_adapter` 可以注入上下文，但不能决定 Agent 本体是什么。
+`adapter_contract` 允许环境注入上下文，但不能决定 Agent 本体是什么。
 
-换句话说，Agent 应该能脱离某个特定 adapter 继续存在。
+换句话说，Agent 应该能脱离某个具体 adapter implementation 继续存在。
 
 ### 关系 4：行为升级路径
 
@@ -277,6 +288,86 @@ Obsidian 不适合直接承担：
 - 运行时 scratch memory
 - 唯一的动态记忆后端
 
+## 显性记忆与隐性记忆
+
+如果借鉴人类记忆里的显性记忆（explicit memory）和隐性记忆（implicit memory），本项目里更合理的映射是：
+
+- `显性记忆`
+  - 可以被明确检索、审阅、解释的记忆
+  - 对应这里的 `Episode` 与 `Learning`
+- `隐性记忆`
+  - 不直接以“案例或事实”出现，而表现为行为倾向、默认策略、熟练化路径
+  - 对应这里的 `Behavior Delta` 被审核后逐步影响 `skill_pack` 的过程
+
+这带来一个重要设计判断：
+
+- 第一版系统不应把“隐性记忆”设计成不可审计的黑盒状态
+- 更合理的做法是把隐性记忆操作化为“被验证过的行为增量”
+
+也就是说，隐性记忆不是不要，而是不应该以不可解释的形式存在。
+
+推荐路径：
+
+`Episode -> Learning -> reviewed Behavior Delta -> skill_pack update`
+
+这条路径本质上就是把显性经验逐步程序化成稳定行为。
+
+## 知识与经验
+
+### 定义
+
+#### `经验`
+
+经验是有情境约束的、由行动和结果支撑的可迁移判断材料。
+
+它至少包含：
+
+- 在什么情境下
+- 采取了什么策略
+- 产生了什么结果
+
+#### `知识`
+
+知识是脱离具体单次情境后，仍然成立或可复用的稳定表述。
+
+它可以是：
+
+- 事实
+- 关系
+- 规律
+- 方法性结论
+
+### 二者关系
+
+在本项目里：
+
+- `Episode` 更接近经验
+- `Learning` 更接近由经验提炼出的知识
+- `Behavior Delta` 更接近由知识进一步转化出的行为调整
+
+所以经验和知识不是二选一关系，而是一个递进关系。
+
+### 本项目应排除什么
+
+本项目应排除：
+
+- 通用知识库
+- 与 Agent 专业角色无关的事实性知识堆积
+- 工作区/项目知识库
+- 面向所有 Agent 共享的开放知识记忆系统
+
+### 本项目不应排除什么
+
+本项目不应排除：
+
+- 从 Agent 自身经验中提炼出的操作性知识
+- 能稳定提升该 Agent 专业表现的启发式、反模式、适用条件
+- 会被后续行为复用的经验性结论
+
+因此，更准确的说法不是“排除知识性记忆”，而是：
+
+`排除通用知识型记忆，保留经验驱动、Agent 专属、可操作的知识化结论。`
+
 ## 当前非目标
 
 本文档暂不定义：
@@ -293,4 +384,4 @@ Obsidian 不适合直接承担：
 - 细化 `agent_identity` 的最小字段边界
 - 细化 `skill_pack` 的结构边界
 - 细化 `Episode` / `Learning` / `Behavior Delta` 的字段边界
-- 定义 `runtime_adapter` 的最小兼容契约
+- 定义 `adapter_contract` 的最小兼容契约

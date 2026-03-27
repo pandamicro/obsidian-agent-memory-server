@@ -404,3 +404,46 @@
   - `Behavior Delta` 到 `skill_pack update` 的审阅机制尚未定义
 - 下一步:
   - 先细化 `agent_identity` 的最小字段边界
+
+## R-0008 继续澄清 adapter 归属、显性/隐性记忆、知识与经验边界
+
+- 日期: 2026-03-27
+- 目标: 回答三个会直接影响 Contract 走向的问题：`runtime_adapter` 是否属于 Agent、本项目是否需要借鉴显性/隐性记忆、以及知识性记忆是否应该被排除
+- 输入:
+  - 用户提出的三个问题
+  - Claude Code / Codex 官方文档
+  - Letta、LangMem、Generative Agents、MemGPT、A-MEM 等一手资料
+  - 用户提供的知乎链接，作为启发性参考而非证据源
+- 动作:
+  - 重新审视 `runtime_adapter` 的命名与归属
+  - 对比显性/隐性记忆与当前 `Episode / Learning / Behavior Delta` 模型的映射关系
+  - 重新定义“知识”和“经验”在本项目中的边界
+- 发现:
+  - 用户指出的问题是对的：如果把“具体 adapter 实现”算作 Agent 私有资产，会把环境层错误混入 Agent 本体
+  - 更准确的对象不是 `runtime_adapter`，而是 `adapter_contract`
+  - `adapter_contract` 属于 Agent 本体，因为 Agent 需要声明自己依赖什么抽象能力
+  - 具体 adapter implementation 不属于 Agent，本质上是外部环境中的共享桥接层，可以服务多个 Agent
+  - 显性/隐性记忆的类比有启发，但不能原样照搬成人类心理学术语
+  - 更适合本项目的映射是：
+    - `Episode / Learning` 对应显性、可审阅、可解释的经验层
+    - `Behavior Delta -> skill_pack update` 对应逐步程序化的隐性行为层
+  - 如果把“隐性记忆”设计成不可解释黑盒，项目会失去可审计性和可迁移性
+  - “知识”与“经验”不是互斥关系：
+    - `Episode` 更接近经验
+    - `Learning` 更接近经验提炼出的知识
+    - `Behavior Delta` 更接近知识进一步程序化成行为
+  - 因此项目不应排除所有知识性记忆，而应排除“通用知识库式记忆”
+- 假设:
+  - 对本项目最有价值的，不是一般知识，而是经验驱动、Agent 专属、能稳定提升行为质量的知识化结论
+  - 只要这些知识化结论仍然绑定在 Agent 身份和专业职责上，它们就仍属于本项目范围
+- 决策:
+  - 将 `runtime_adapter` 在主文档中修正为 `adapter_contract`
+  - 保留显性/隐性记忆类比，但只作为设计启发，不作为机械映射
+  - 本项目排除“通用知识型记忆”，但保留“经验驱动的知识化结论”
+- 未解问题:
+  - `Behavior Delta` 进入 `skill_pack` 前需要什么审阅阈值
+  - 某条 `Learning` 在多大程度上抽象后，会越界成通用知识库条目
+  - 同一个 adapter implementation 服务多个 Agent 时，能力暴露如何做到既共享又隔离
+- 下一步:
+  - 细化 `agent_identity` 最小字段边界
+  - 细化 `adapter_contract` 的能力声明格式
