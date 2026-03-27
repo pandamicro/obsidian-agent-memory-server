@@ -693,3 +693,57 @@
 - 下一步:
   - 将 `feedback_object` 挂接回 `dynamic_memory` 的晋升与失效规则
   - 再回到 `agent_identity`
+
+## R-0015 先定义可进入记忆链路的数据，再细化 feedback object
+
+- 日期: 2026-03-27
+- 目标: 回到比 `feedback_object` 更上游的问题，判断哪些运行数据真的有资格进入记忆判断链路
+- 输入:
+  - 当前 `dynamic_memory` 中关于反馈、晋升、失效的已有结论
+  - OpenAI / Anthropic / LangSmith 等关于 trace、eval、运行反馈的工程共识
+  - 用户提出的四个关键条件：可获取、可关联、可独立评估、可用于蒸馏
+- 动作:
+  - 不继续扩张 `feedback_object` 字段，而是先定义数据准入标准
+  - 将“什么数据值得进入记忆链路”写成 `dynamic_memory` 的上游约束
+  - 区分可接受的数据类型与不应直接进入链路的噪音数据
+- 发现:
+  - 用户指出的方向是对的：如果不先约束数据准入，`feedback_object` 很容易退化成“原始日志的结构化包装”
+  - 不是所有可采集数据都适合作为反馈输入；很多数据只能审计，不能判断记忆价值
+  - 对本项目而言，进入记忆链路的数据至少要同时满足四个条件：
+    - `observable`
+    - `linkable`
+    - `evaluatable`
+    - `distillable`
+  - 这四个条件缺一不可：
+    - 不能稳定获取，就无法作为默认机制
+    - 不能关联经验使用与结果，就无法支持记忆判断
+    - 不能独立评估价值方向，就无法驱动晋升或失效
+    - 不能被蒸馏，就只会沦为日志堆积
+  - 当前最合理的准入数据类型是：
+    - `outcome events`
+    - `usage events`
+    - `review events`
+    - `trace anchors`
+  - 当前最不应直接进入记忆链路的是：
+    - 全量 transcript
+    - 全量工具日志
+    - 工作区全量状态快照
+    - 与经验使用无明确关联的噪音事件
+- 假设:
+  - 只要准入标准先明确，后续 `feedback_object` 的设计就能保持轻量且可移植
+  - 第一阶段不需要全量 observability 平台，只需要保证关键事件具备可观测和可关联能力
+- 决策:
+  - 在 `dynamic-memory.md` 中增加 `数据准入标准`
+  - 明确四个必要条件：
+    - `observable`
+    - `linkable`
+    - `evaluatable`
+    - `distillable`
+  - 将这条规则设为后续 feedback 设计的前置约束
+- 未解问题:
+  - `usage events` 的最小采集粒度如何定义，才能跨环境保持一致
+  - `trace anchors` 是否需要统一 ID 规范
+  - 某些弱信号数据在单独看时不可评估，但聚合后可评估，是否允许延迟进入链路
+- 下一步:
+  - 基于数据准入标准回看 `feedback_object` 是否需要收缩字段
+  - 再将 `feedback_object` 挂接回 `dynamic_memory` 的晋升与失效规则
