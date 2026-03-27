@@ -41,6 +41,7 @@
 - [skill-pack.md](./portable-agent-contract/skill-pack.md)
 - [dynamic-memory.md](./portable-agent-contract/dynamic-memory.md)
 - [adapter-contract.md](./portable-agent-contract/adapter-contract.md)
+- [relationship-map.md](./portable-agent-contract/relationship-map.md)
 
 ## 顶层边界
 

@@ -959,3 +959,32 @@
 - 下一步:
   - 如继续留在框架层，可补 `冲突处理` 与 `检索可见性`
   - 也可以开始回到更系统化的 `agent / memory / feedback` 关系图
+
+## R-0022 新增 Mermaid 关系图并固定图示规范
+
+- 日期: 2026-03-27
+- 目标: 为 `Portable Agent Contract` 增加一张稳定的对象关系图，并把图示规范固定为 Mermaid
+- 输入:
+  - 当前已形成的 `agent_identity / skill_pack / dynamic_memory / adapter_contract / feedback_object` 关系
+  - 用户要求今后所有示意图统一使用 Mermaid
+- 动作:
+  - 新建 `docs/portable-agent-contract/relationship-map.md`
+  - 用 Mermaid 绘制 `agent / skill / memory / feedback / adapter / environment` 的关系图
+  - 在主入口 `docs/portable-agent-contract.md` 中加入子文档导航
+  - 在项目侧 `AGENTS.md` 中加入“以后所有示意图统一使用 Mermaid”
+- 发现:
+  - 当前对象关系已经足够稳定，适合抽成一张高层图
+  - 把图示规范提前固定，有助于后续文档风格一致，也方便后面继续增图
+- 假设:
+  - 当前这张图更适合作为关系总览，而不是流程图或状态机图
+- 决策:
+  - 用 Mermaid 作为本项目后续所有示意图的统一格式
+  - 将关系图保存在 `Portable Agent Contract` 子目录下，作为长期入口之一
+- 未解问题:
+  - 未来是否需要继续补：
+    - 反馈聚合图
+    - 状态变化图
+    - 身份演化图
+- 下一步:
+  - 如继续细化，可补 `冲突处理 / 检索可见性`
+  - 或继续新增关系图对应的子图
