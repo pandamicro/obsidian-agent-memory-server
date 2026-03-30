@@ -5,10 +5,15 @@
 ```mermaid
 classDiagram
     class ExternalInvoker["外部调用方"]
-    class Codex["Codex Agent"]
-    class ClaudeCode["Claude Code Agent"]
+    class RuntimeEnvironment["运行环境接口"]
+    class CodexRuntime["Codex Runtime"]
+    class ClaudeCodeRuntime["Claude Code Runtime"]
+    class AgentInstance["Agent 实例"]
+    class ProjectRuntime["用户项目运行环境"]
     class ExplicitTools["外部工具（显式）"]
     class ImplicitTools["外部工具（隐式）"]
+    class EventRegistrar["event_registrar（事件驱动）"]
+    class PeriodicDistiller["periodic_distiller（周期驱动）"]
 
     class AgentIdentity["agent_identity"]
     class SkillPack["skill_pack"]
@@ -29,13 +34,20 @@ classDiagram
     class AdapterImpl["adapter implementation"]
     class SessionContext["临时上下文"]
 
-    ExternalInvoker --> Codex : 调用
-    ExternalInvoker --> ClaudeCode : 调用
-    Codex --> AgentIdentity : 绑定身份
-    ClaudeCode --> AgentIdentity : 绑定身份
+    RuntimeEnvironment <|-- CodexRuntime
+    RuntimeEnvironment <|-- ClaudeCodeRuntime
+
+    ExternalInvoker --> RuntimeEnvironment : 交互入口
+    RuntimeEnvironment --> AgentInstance : Spawn
+    AgentInstance --> AgentIdentity : 绑定身份
 
     ExplicitTools --> AgentIdentity : 显式匹配适配
     ImplicitTools --> AgentIdentity : 隐式行为耦合
+
+    EventRegistrar --> DynamicMemory : 注册事件写入
+    PeriodicDistiller --> MemoryDistiller : 周期触发蒸馏
+    EventRegistrar ..> ProjectRuntime : MCP 消息
+    PeriodicDistiller ..> ProjectRuntime : MCP 消息
 
     AgentIdentity --> SkillPack
     AgentIdentity --> DynamicMemory
@@ -66,6 +78,7 @@ classDiagram
     AdapterContract --> SessionContext
     SessionContext ..> ExplicitTools : 临时注入
     SessionContext ..> ImplicitTools : 环境携带
+    RuntimeEnvironment --> RuntimeEnv : 宿主映射
 
     Learning ..> FileKnowledge : 稳定沉淀
     BehaviorDelta ..> FileKnowledge : 审阅后沉淀
@@ -73,8 +86,10 @@ classDiagram
 
 ## 读图说明
 
-- 关系视角改为“外部调用 Agent（如 Codex / Claude Code）”而不是内部流水线
+- 核心驱动骨架为：`外部调用方 -> 运行环境（Codex/Claude Code）-> Spawn Agent 实例 -> 绑定 agent_identity`
 - 外部工具分成 `显式` 与 `隐式` 两类，并通过 `agent_identity` 建立适配关系
+- 新增两个流程驱动对象：`event_registrar`（事件驱动）与 `periodic_distiller`（周期驱动）
+- `event_registrar` 与 `periodic_distiller` 都通过类 MCP 消息与“用户项目运行环境”通信
 - `memory_index` 表达 Agent 在 `dynamic_memory` 上的索引能力
 - `episode_extractor` 表达 Agent 对新记忆 `Episode` 的抽取能力
 - `memory_distiller` 表达从 `Episode` 到 `Learning / Behavior Delta` 的蒸馏能力
