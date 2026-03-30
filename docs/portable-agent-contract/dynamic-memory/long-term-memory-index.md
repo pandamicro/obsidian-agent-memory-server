@@ -79,6 +79,59 @@
 - 只作为候选展示
 - 不进入执行上下文
 
+## `applicability` 定义（外部 session）
+
+`applicability` 应建模为可匹配的情境约束，而不是一段笼统描述。
+
+建议最小结构：
+
+- `task_type`
+  - 任务类型，如 `research / implementation / debugging / review`
+- `problem_shape`
+  - 问题形态，如 `open-ended design / error triage / contract modeling`
+- `environment_constraints`
+  - 环境约束，如 `tool-limited / repo-external / no-runtime-write`
+- `risk_level`
+  - 风险级别，如 `low / medium / high`
+- `exclusions`
+  - 不适用条件（明确排除项）
+
+### 命中判定（第一阶段）
+
+- `hard match`
+  - `task_type` 与 `exclusions` 同时通过
+- `soft match`
+  - `problem_shape / environment_constraints / risk_level` 至少命中两项
+- `no match`
+  - 命中任一 `exclusions`，或软匹配仅命中 0-1 项
+
+只有 `hard match + soft match` 同时成立时，`Behavior Delta` 才可进入 `execution_visible`。
+
+## `evidence_refs` 定义（外部 session）
+
+`evidence_refs` 是“可回放证据指针集合”，不是口头解释。
+
+建议最小结构：
+
+- `ref_type`
+  - `trace / test_result / review_comment / diff / run_log / user_feedback`
+- `ref_id`
+  - 可唯一定位的引用 ID 或路径
+- `target_span`
+  - 可选，指向具体段落、步骤或对象字段
+- `observed_at`
+  - 证据产生时间
+- `integrity`
+  - `verifiable / partial / weak`
+
+### 有效性门槛（第一阶段）
+
+- 至少 1 条 `verifiable` 证据
+- 至少覆盖 1 条“行为改变后结果更好”信号
+- 不允许全部来自同一类弱证据（例如仅自我解释）
+
+若不满足门槛，Delta 仅保留 `review_visible`。
+
 ### `skill_pack` 可注入条件
 
 默认可注入；只有在以下情形降级：
@@ -111,6 +164,7 @@
 - `applicability`
 - `promotion_target`
 - `evidence_refs`
+- `evidence_quality`
 - `last_verified_at`
 - `state`（`keep / update / deprecate / delete`）
 
