@@ -54,7 +54,9 @@ classDiagram
     AgentIdentity --> AdapterContract
 
     DynamicMemory --> MemoryIndex : 维护索引
-    MemoryIndex --> Episode : 检索入口
+    AgentIdentity --> MemoryIndex : 身份域检索
+    MemoryIndex --> FileKnowledge : 长期记忆索引目标
+    MemoryIndex ..> Episode : 证据回溯入口
 
     DynamicMemory --> EpisodeExtractor : 抽取新经验
     EpisodeExtractor --> Episode : 形成 episode
@@ -90,7 +92,8 @@ classDiagram
 - 外部工具分成 `显式` 与 `隐式` 两类，并通过 `agent_identity` 建立适配关系
 - 新增两个流程驱动对象：`event_registrar`（事件驱动）与 `periodic_distiller`（周期驱动）
 - `event_registrar` 与 `periodic_distiller` 都通过类 MCP 消息与“用户项目运行环境”通信
-- `memory_index` 表达 Agent 在 `dynamic_memory` 上的索引能力
+- `memory_index` 的主索引目标是文件型知识层中的长期记忆对象，而不是 `Episode`
+- `Episode` 主要用于证据回溯与蒸馏输入，不是长期检索主目标
 - `episode_extractor` 表达 Agent 对新记忆 `Episode` 的抽取能力
 - `memory_distiller` 表达从 `Episode` 到 `Learning / Behavior Delta` 的蒸馏能力
 - `feedback_object` 仍是 `dynamic_memory` 的支持对象，不是第五个核心对象
