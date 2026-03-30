@@ -20,7 +20,6 @@ classDiagram
     class DynamicMemory["dynamic_memory"]
     class AdapterContract["adapter_contract"]
 
-    class MemoryIndex["memory_index"]
     class EpisodeExtractor["episode_extractor"]
     class MemoryDistiller["memory_distiller"]
     class Episode["Episode"]
@@ -53,10 +52,8 @@ classDiagram
     AgentIdentity --> DynamicMemory
     AgentIdentity --> AdapterContract
 
-    DynamicMemory --> MemoryIndex : 维护索引
-    AgentIdentity --> MemoryIndex : 身份域检索
-    MemoryIndex --> FileKnowledge : 长期记忆索引目标
-    MemoryIndex ..> Episode : 证据回溯入口
+    AgentIdentity --> BehaviorDelta : 长期记忆检索锚点
+    AgentIdentity ..> Episode : 证据回溯入口
 
     DynamicMemory --> EpisodeExtractor : 抽取新经验
     EpisodeExtractor --> Episode : 形成 episode
@@ -92,7 +89,8 @@ classDiagram
 - 外部工具分成 `显式` 与 `隐式` 两类，并通过 `agent_identity` 建立适配关系
 - 新增两个流程驱动对象：`event_registrar`（事件驱动）与 `periodic_distiller`（周期驱动）
 - `event_registrar` 与 `periodic_distiller` 都通过类 MCP 消息与“用户项目运行环境”通信
-- `memory_index` 的主索引目标是文件型知识层中的长期记忆对象，而不是 `Episode`
+- 不再单独抽象 `memory_index`，索引语义直接挂在 `agent_identity -> Behavior Delta`
+- `Behavior Delta` 作为长期可执行记忆锚点，主存于文件型知识层
 - `Episode` 主要用于证据回溯与蒸馏输入，不是长期检索主目标
 - `episode_extractor` 表达 Agent 对新记忆 `Episode` 的抽取能力
 - `memory_distiller` 表达从 `Episode` 到 `Learning / Behavior Delta` 的蒸馏能力
