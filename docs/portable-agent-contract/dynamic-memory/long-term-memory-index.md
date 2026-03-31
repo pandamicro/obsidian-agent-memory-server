@@ -174,13 +174,20 @@ flowchart TD
 ### 命中判定（第一阶段）
 
 - `hard match`
-  - `task_type` 与 `exclusions` 同时通过
+  - `task_type` 通过且未命中任一 `exclusions`
 - `soft match`
   - `problem_shape / environment_constraints / risk_level` 至少命中两项
 - `no match`
   - 命中任一 `exclusions`，或软匹配仅命中 0-1 项
 
-只有 `hard match + soft match` 同时成立时，`Behavior Delta` 才可进入 `execution_visible`。
+执行可见性规则：
+
+- `hard match`
+  - 在满足 `review_state` 与 `evidence_refs` 门槛时，可进入 `execution_visible`
+- `soft match`
+  - 默认保持 `review_visible`；仅当累计命中达到注入限流规则（见上文 `soft match` 累计命中条件）后，才可晋升为 `execution_visible`
+- `no match`
+  - 保持 `trace_visible` 或不注入
 
 ## `evidence_refs` 定义（外部 session）
 
