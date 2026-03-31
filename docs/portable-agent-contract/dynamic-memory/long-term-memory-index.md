@@ -79,6 +79,81 @@
 - 只作为候选展示
 - 不进入执行上下文
 
+## 触发机制（记忆驱动器）
+
+记忆驱动器应作为 session 运行时的同步中间件执行，而非后台多线程监控。
+
+### 运行模型（单线程）
+
+每轮对话按固定顺序执行：
+
+1. `pre_turn_hook`
+2. 主 Agent 推理与工具调用
+3. `post_turn_hook`
+
+说明：
+
+- `pre_turn_hook` 负责候选检索与可注入判断
+- `post_turn_hook` 负责结果记账、证据回填与状态迁移
+- 工具级证据可在 `PostToolUse` 阶段补充进入 `evidence_refs`
+
+### 事件触发点
+
+仅在以下事件触发检索，避免每步打断主链路：
+
+- `task_started`
+  - 新任务进入或目标发生切换
+- `plan_frozen`
+  - 方案由草稿进入定稿
+- `error_or_retry`
+  - 出现失败、重试或回滚信号
+- `pre_output_check`
+  - 最终输出前的一次一致性检查
+
+### 触发频次与限流
+
+第一阶段推荐默认值：
+
+- 每个事件最多注入 1 次
+- 全局冷却窗口：`cooldown_turns = 8`
+- 冷却窗口内仅允许 `error_or_retry` 事件打破冷却
+- 单次最多注入 2 条记忆提示，按 `hard match` 优先
+- `soft match` 候选需累计命中 `>=2` 次后才允许注入执行上下文
+
+### 注入格式（最小干扰）
+
+主链路仅注入短提示，不注入冗长证据正文：
+
+`MemoryHint: <可执行结论>; applicability=<hard|soft,confidence>; evidence=<ref_ids>`
+
+`evidence_refs` 原始内容保留在侧通道，用于审阅与回放，不直接扩张主上下文。
+
+### Session 侧状态字段（最小）
+
+- `last_inject_turn`
+- `cooldown_turns`
+- `soft_hit_counter[delta_id]`
+- `injected_events[turn_id]`
+
+以上字段用于控制节奏，不参与任务语义判断。
+
+### 触发与注入流程（示意）
+
+```mermaid
+flowchart TD
+    A[新一轮消息进入] --> B[pre_turn_hook]
+    B --> C{是否触发事件?}
+    C -- 否 --> G[主Agent继续推理]
+    C -- 是 --> D[检索Delta候选]
+    D --> E{门控+限流通过?}
+    E -- 否 --> F[标记review_visible并记账]
+    E -- 是 --> H[注入MemoryHint到主上下文]
+    F --> G
+    H --> G
+    G --> I[post_turn_hook]
+    I --> J[回填evidence_refs与状态迁移]
+```
+
 ## `applicability` 定义（外部 session）
 
 `applicability` 应建模为可匹配的情境约束，而不是一段笼统描述。
