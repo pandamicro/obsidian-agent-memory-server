@@ -988,3 +988,238 @@
 - 下一步:
   - 如继续细化，可补 `冲突处理 / 检索可见性`
   - 或继续新增关系图对应的子图
+
+## R-0023 统一 dynamic-memory 三流程数据协议的初步拆解
+
+- 日期: 2026-04-01
+- 目标: 梳理 `dynamic-memory` 三条流程的重叠字段、职责边界和潜在公共载体，为统一数据协议做准备
+- 输入:
+  - `docs/portable-agent-contract/dynamic-memory.md`
+  - `docs/portable-agent-contract/dynamic-memory/short-term-feedback.md`
+  - `docs/portable-agent-contract/dynamic-memory/memory-distillation.md`
+  - `docs/portable-agent-contract/dynamic-memory/long-term-memory-index.md`
+  - `docs/portable-agent-contract/relationship-map.md`
+- 动作:
+  - 对比三条流程的核心对象、生命周期操作、门控条件与输出类型
+  - 检查它们是否已经共享足够的元数据与状态表达
+  - 判断更适合“统一信封”还是“完全共用字段集”
+- 发现:
+  - 三条流程在概念层已共享一批核心语义：`agent_identity`、`Episode`、`Learning`、`Behavior Delta`、`evidence_refs`、`review_state`、`applicability`
+  - 现有文档更像职责拆分，而不是通信协议拆分；因此三者之间缺少一个显式的公共载体
+  - 短期反馈侧重证据采集与状态归因，蒸馏侧重对象晋升与回退，长期索引侧重检索门控与注入
+  - 若三条流程直接交换各自的专属结构，容易出现字段重复、状态语义不一致和对象身份漂移
+- 假设:
+  - 更稳妥的方向不是把三条流程压缩为完全同构，而是先定义一个跨流程公共信封，再允许每条流程持有最小扩展字段
+- 决策:
+  - 在用户确认协议形态前，不冻结统一 schema
+  - 后续设计优先回答“公共信封必需字段是什么”以及“哪些字段只允许某一流程拥有”
+- 未解问题:
+  - 是否需要以 `memory_event` 作为三流程统一入口对象
+  - 公共字段是否应覆盖 `state / evidence / relation / target / visibility`
+  - 三条流程之间同步的基本单位应是“对象”还是“事件”
+- 下一步:
+  - 等待用户确认统一策略偏向 `公共信封 / 完全共用 / 分层共享`
+  - 基于选择，再提出 2-3 种可行方案并进入设计讨论
+
+## R-0024 评估 dynamic-memory 三流程是否具备公共数据层条件
+
+- 日期: 2026-04-01
+- 目标: 判断 `short-term feedback`、`memory distillation`、`long-term memory index` 是否已经具备统一公共信封与共享核心数据层的条件
+- 输入:
+  - `docs/portable-agent-contract/dynamic-memory/short-term-feedback.md`
+  - `docs/portable-agent-contract/dynamic-memory/memory-distillation.md`
+  - `docs/portable-agent-contract/dynamic-memory/long-term-memory-index.md`
+  - `docs/portable-agent-contract/agent-identity.md`
+  - `docs/portable-agent-contract/skill-pack.md`
+  - `docs/portable-agent-contract/adapter-contract.md`
+- 动作:
+  - 交叉比对三条流程的对象、字段、状态、证据与可见性规则
+  - 识别哪些字段是路由/归属/审阅/检索通用元数据，哪些字段只属于局部流程
+  - 判断“公共信封”与“完全共用 payload”是否应分开处理
+- 发现:
+  - 三条流程已经共享足够多的公共语义，尤其是 `agent_identity`、`evidence_refs`、`review_state`、`applicability`、`state`、`visibility` 这一组跨流程概念
+  - 它们的差异主要在流程目标，而不是底层数据语义：
+    - 短期反馈偏证据采集与归因
+    - 记忆蒸馏偏对象晋升、回退与再整合
+    - 长期索引偏检索门控与注入决策
+  - 因此，三者具备统一“公共信封”的条件
+  - 但三者暂不具备直接压成“完全同构 payload”的条件；强行同构会让局部流程不得不携带大量只对别的流程有意义的字段
+  - 更合理的做法是：公共信封负责跨流程通信，公共核心对象负责稳定语义，流程扩展字段只放在各自子类型里
+- 假设:
+  - 如果后续实现发现三流程频繁互传同一批局部字段，那么这些字段可以再上移到公共核心层
+  - 当前阶段先保留局部扩展，比过早强制扁平化更稳
+- 决策:
+  - 结论先收敛为：`公共信封成立，完全共用暂不成立，分层共享更符合现状`
+  - 后续若进入设计，应优先抽出“公共元数据层”和“流程 payload 层”的边界
+- 未解问题:
+  - 公共信封的最小字段是否应包含 `event_type / object_ref / target_ref / evidence_refs / review_state / visibility / timestamps`
+  - `Episode / Learning / Behavior Delta / feedback_object` 哪些应进入公共核心，哪些应留作流程局部类型
+  - 哪些字段属于纯运行时状态，哪些字段应持久化进入 memory 本体
+- 下一步:
+  - 让用户确认是否继续沿“公共信封 + 分层共享”推进
+  - 如果确认，再进入公共字段最小集的设计
+
+## R-0025 收敛 dynamic-memory 的最小公共字段集与非统一边界
+
+- 日期: 2026-04-01
+- 目标: 在确认“公共信封 + 分层共享”方向后，进一步判断三流程最小公共字段集，以及哪些字段不应被统一
+- 输入:
+  - `docs/portable-agent-contract/dynamic-memory/short-term-feedback.md`
+  - `docs/portable-agent-contract/dynamic-memory/memory-distillation.md`
+  - `docs/portable-agent-contract/dynamic-memory/long-term-memory-index.md`
+  - `docs/portable-agent-contract/agent-identity.md`
+- 动作:
+  - 将三流程字段按三层重新归类：
+    - 公共信封层
+    - 公共核心对象层
+    - 流程扩展层
+  - 检查每个字段是服务“通信”“对象语义”还是“局部操作策略”
+  - 判断哪些字段若被上移会导致语义污染
+- 发现:
+  - `dynamic-memory` 三流程已经足够支撑一个最小公共信封，公共信封应优先承载“跨流程路由与审阅元数据”，而不是对象详情
+  - 更合理的公共信封最小字段候选为：
+    - `message_id`
+    - `identity_id`
+    - `object_kind`
+    - `object_ref`
+    - `event_type`
+    - `target_ref`
+    - `evidence_refs`
+    - `review_state`
+    - `visibility`
+    - `state`
+    - `applicability`
+    - `created_at`
+    - `observed_at`
+    - `updated_at`
+  - 其中：
+    - `identity_id / object_kind / object_ref / event_type` 负责跨流程路由
+    - `target_ref / evidence_refs` 负责关联与证据回放
+    - `review_state / visibility / state` 负责审阅、注入、失效判断
+    - `applicability` 负责从蒸馏与长期检索之间共享情境命中语义
+    - 时间字段负责回放顺序、反馈有效期和状态迁移追踪
+  - 目前具备公共核心语义的对象字段，只适合抽到“对象基类”层，不适合全部塞进公共信封：
+    - `Episode`
+      - 至少需要情境、动作、结果、证据引用
+    - `Learning`
+      - 至少需要 `claim / applicability / failure_conditions / evidence_refs`
+    - `Behavior Delta`
+      - 至少需要可执行结论、`review_state / applicability / evidence_refs / state`
+    - `feedback_object`
+      - 至少需要 `signal_type / polarity / target_ref / evidence_refs / observed_at`
+  - 以下字段当前不应统一到公共核心：
+    - 短期反馈局部字段：
+      - `signal_type`
+      - `polarity`
+      - `feedback aggregation`
+      - `state transition threshold`
+    - 蒸馏流程局部字段：
+      - `promotion_target`
+      - `failure_conditions`
+      - `consolidate / reconsolidate / reflect` 这类操作态字段
+    - 长期索引局部字段：
+      - `last_inject_turn`
+      - `cooldown_turns`
+      - `soft_hit_counter`
+      - `injected_events`
+      - `MemoryHint`
+  - 上述非统一字段的共同特征是：它们服务局部流程控制，而不是记忆对象本体，也不是跨流程必需通信字段
+- 假设:
+  - 若后续实现中发现 `promotion_target` 不只是索引/蒸馏控制字段，而是多个流程都必须依赖的长期晋升目标，则它可以再上移为公共核心字段
+  - 若未来要支持统一事件总线，`message_id + event_type + object_ref` 这组字段可作为最小事件键
+- 决策:
+  - 公共信封只统一“通信所需最小字段”，不承载完整对象内容
+  - 对象共性应分两层表达：
+    - 信封层：通信与路由
+    - 对象层：`Episode / Learning / Behavior Delta / feedback_object` 的公共语义字段
+  - 流程控制字段继续留在各自子流程，避免把统一协议做成巨型控制面板
+- 未解问题:
+  - `review_state / visibility / state` 是否应进一步统一成一个更抽象的“可见性与生命周期状态机”
+  - `applicability` 是否应成为 `Learning` 与 `Behavior Delta` 的必填字段，而 `Episode` 仅允许可选
+  - `target_ref` 与 `object_ref` 是否需要区分“事件作用对象”和“当前消息承载对象”
+- 下一步:
+  - 若继续设计，可先写一版“公共信封 + 四类对象基型”的最小协议草案
+  - 然后再回到三条子流程，检查是否有字段需要回填或改名以减少语义分叉
+
+## R-0026 收紧当前阶段目标为“只定义公共信封”
+
+- 日期: 2026-04-01
+- 目标: 避免在 `dynamic-memory` 三流程协议统一中继续上升到对象基型设计，先把当前阶段收敛到最小可用公共信封
+- 输入:
+  - R-0024 与 R-0025 的研究结论
+  - 用户新增约束：现阶段保持简单直接，不做过度设计
+- 动作:
+  - 停止继续展开第二层对象公共核心
+  - 将当前阶段目标收缩为“只定义公共信封”
+  - 保留对象基型讨论为后续可选研究，而不是当前交付物
+- 发现:
+  - 目前最稳定、最有共识的部分是跨流程通信字段，而不是对象基型
+  - 若现在继续定义 `Episode / Learning / Behavior Delta / feedback_object` 的公共核心，容易在证据不足时把对象模型过早冻结
+  - 公共信封已经足够支撑三流程之间的通信、短期记忆触发、蒸馏管道衔接与提取入口统一
+- 假设:
+  - 只要公共信封稳定，后续对象内部结构即使继续调整，也不会破坏流程之间的基本协议兼容性
+- 决策:
+  - 当前阶段只定义公共信封
+  - 第二层对象公共核心暂不进入正式设计
+  - 第三层流程扩展继续保留在各自子流程文档中
+- 未解问题:
+  - 公共信封字段是否还需要进一步压缩
+  - `target_ref` 与 `object_ref` 是否都需要保留
+  - 时间字段是保留 `created_at / observed_at / updated_at` 三个，还是先缩到两个
+- 下一步:
+  - 直接收敛公共信封的最小字段集
+  - 然后再决定这些字段应写入哪个正式文档
+
+## R-0027 压缩 dynamic-memory 公共信封到第一阶段最小集合
+
+- 日期: 2026-04-01
+- 目标: 将公共信封从“候选字段集合”压缩到真正第一阶段必需的最小字段
+- 输入:
+  - R-0025 中列出的 14 个公共信封候选字段
+  - 用户新增要求：现阶段继续压缩，保持简单直接
+- 动作:
+  - 按“没有它是否还能完成跨流程通信”这一单一标准逐项筛选
+  - 将对象语义字段、审阅字段、流程控制字段尽量移出公共信封
+  - 保留少量必要的可选字段，用于兼容反馈挂接场景
+- 发现:
+  - 第一阶段公共信封不需要承载完整状态判断，只需要支撑“谁发的、是什么对象、发生了什么、关联到谁、证据在哪、何时发生”
+  - 因此，以下字段可以压缩出公共信封：
+    - `review_state`
+    - `visibility`
+    - `state`
+    - `applicability`
+    - `created_at`
+    - `updated_at`
+  - 上述字段虽然重要，但它们更接近对象本体状态或流程门控条件，而不是最小通信必需字段
+  - 第一阶段更稳的公共信封最小集合应为：
+    - `message_id`
+    - `identity_id`
+    - `object_kind`
+    - `object_ref`
+    - `event_type`
+    - `evidence_refs`
+    - `observed_at`
+  - 其中 `target_ref` 不应作为全局必填字段，但应保留为可选字段：
+    - 在 `feedback_object` 场景中需要它表达“这条反馈作用于谁”
+    - 在 `Episode / Learning / Behavior Delta` 自身流转时，不一定需要它
+- 假设:
+  - 若后续发现 `event_type + object_ref` 已足以唯一描述动作语义，`message_id` 甚至还可以再评估是否下沉为实现层
+- 决策:
+  - 第一阶段公共信封先压到：
+    - 必填：
+      - `message_id`
+      - `identity_id`
+      - `object_kind`
+      - `object_ref`
+      - `event_type`
+      - `evidence_refs`
+      - `observed_at`
+    - 可选：
+      - `target_ref`
+- 未解问题:
+  - `message_id` 是否属于协议层必需，还是实现层生成即可
+  - `evidence_refs` 是否允许为空数组，还是要求至少一条弱引用
+  - `observed_at` 是否应统一改名为更中性的 `timestamp`
+- 下一步:
+  - 若进入正式设计，可直接以这 7+1 字段写出公共信封草案
+  - 然后检查三条子流程文档是否需要回填同名字段以减少歧义
