@@ -1,0 +1,20 @@
+{
+  "object_ref": "long-term:unity-optimization-agent:hot-path-allocations",
+  "identity_id": "unity-optimization-agent",
+  "created_at": "2026-04-02T00:00:04.000Z",
+  "summary": "In C# hot paths, reduce allocations first and only apply lower-level ref/struct techniques after measurement proves allocation pressure or copying cost is the bottleneck.",
+  "source_type": "official_docs",
+  "source_title": "Reduce memory allocations using new C# features",
+  "source_url": "https://learn.microsoft.com/en-us/dotnet/csharp/advanced-topics/performance/",
+  "evidence_refs": [
+    "dotnet-reduce-allocations",
+    "dotnet-performance-tips"
+  ],
+  "tags": [
+    "csharp",
+    "allocations",
+    "struct",
+    "ref",
+    "measurement"
+  ]
+}

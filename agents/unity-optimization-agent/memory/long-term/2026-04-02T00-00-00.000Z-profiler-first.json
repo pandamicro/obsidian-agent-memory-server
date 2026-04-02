@@ -1,0 +1,19 @@
+{
+  "object_ref": "long-term:unity-optimization-agent:profile-first",
+  "identity_id": "unity-optimization-agent",
+  "created_at": "2026-04-02T00:00:00.000Z",
+  "summary": "Do not optimize Unity code blindly. Profile first, identify whether the bottleneck is CPU, memory, rendering, physics, or GPU, then iterate on the measured hotspot.",
+  "source_type": "official_docs",
+  "source_title": "Unity Profiler overview",
+  "source_url": "https://docs.unity3d.com/es/2021.1/Manual/Profiler.html",
+  "evidence_refs": [
+    "unity-profiler-overview",
+    "unity-mobile-optimization-guide"
+  ],
+  "tags": [
+    "profiling",
+    "cpu",
+    "memory",
+    "workflow"
+  ]
+}

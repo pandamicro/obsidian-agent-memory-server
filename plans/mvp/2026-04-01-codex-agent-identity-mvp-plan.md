@@ -4,6 +4,12 @@
 
 **Architecture:** MVP 采用 `文件优先单进程`。一个本地进程负责加载 `agent_identity` 资产文件，接收最小输入，写入短期记忆事件，执行一个极简蒸馏步骤，并把结果落到长期记忆目录；所有状态以本地文件保存，优先保证链路清晰、目录边界明确、验证路径稳定。
 
+当前 Codex 接入方式：
+
+- 通过 shell 直接调用本地 CLI
+- 当前不是 MCP 接入
+- 后续如需 MCP 化，应在同一代码基上为 CLI 核心逻辑增加 MCP 包装层
+
 **Scope Constraints:**
 
 - 只做 Codex 环境下的实验性原型
@@ -37,17 +43,31 @@
 - 不实现跨环境同步
 - 不实现 Obsidian 深度集成
 
+## CLI Boundary Reference
+
+CLI 的详细功能边界、命令职责和使用说明，统一以：
+
+- `plans/mvp/2026-04-01-agent-identity-and-cli-contract.md`
+
+为准。
+
 ## Minimal Runtime Shape
 
 推荐第一版运行形态：
 
 - 一个 CLI 驱动的短生命周期本地进程
-- 启动时加载 `agent_identity`
+- 启动时加载已存在的 `agent_identity`
 - 处理单次输入
 - 写入短期记忆事件文件
 - 执行一次极简蒸馏或复制式晋升
 - 写入长期记忆文件
 - 输出本次运行摘要
+
+补充约束：
+
+- `init` 属于 session 外的 Agent 资产初始化
+- `run` 才是 session 内的主入口
+- 同一个 Agent 初始化一次后，应跨多个 session 复用
 
 这样做的原因：
 
@@ -143,8 +163,8 @@ agents/<agent_id>/runs/
 第一版单进程建议固定为以下步骤：
 
 1. 启动进程
-2. 加载 `agent_identity`
-3. 校验目录是否存在，不存在则初始化
+2. 加载已初始化的 `agent_identity`
+3. 校验运行所需目录和文件是否存在
 4. 接收一次最小输入
 5. 生成一条短期记忆公共信封事件
 6. 将事件写入短期记忆目录
@@ -152,6 +172,12 @@ agents/<agent_id>/runs/
 8. 将结果写入长期记忆目录
 9. 读取长期记忆目录中的最新对象
 10. 输出运行摘要并退出
+
+说明：
+
+- 上述生命周期描述的是 `run`
+- `init` 不属于每次 session 的固定步骤
+- 若身份文件或目录缺失，`run` 应失败并提示先执行一次 `init`
 
 ## Service Process Management
 

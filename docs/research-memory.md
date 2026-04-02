@@ -1383,3 +1383,342 @@
   - CLI 命令的参数形式仍未确认
 - 下一步:
   - 如进入实现前最后确认，应优先敲定文件格式与 CLI 协议
+
+## R-0033 调研 Codex agent_identity MVP 与后续迭代的技术选型
+
+- 日期: 2026-04-01
+- 目标: 为 `文件优先单进程` 的 Codex `agent_identity` MVP 以及后续项目迭代选择更稳妥的技术路线
+- 输入:
+  - 仓库当前状态：纯文档与研究阶段，无既有代码栈负担
+  - OpenAI Developers / Codex 官方文档
+  - MCP 官方文档与官方 SDK 文档
+- 来源:
+  - https://developers.openai.com/api/docs/models
+  - https://openai.com/codex/
+  - https://modelcontextprotocol.io/docs/sdk
+  - https://github.com/modelcontextprotocol/typescript-sdk
+  - https://github.com/modelcontextprotocol/python-sdk
+- 动作:
+  - 对比 TypeScript、Python、Go 在 MCP 生态、单进程文件原型、后续服务化、Codex 适配上的成本
+  - 评估 MVP 阶段与后续迭代是否应采用同一技术栈
+  - 评估文件格式、测试框架、运行时与后续存储演化路线
+- 发现:
+  - MCP 官方当前将 TypeScript、Python、C#、Go 列为 Tier 1 SDK，说明这几种语言都具备正式支持
+  - 但 TypeScript SDK 与 Python SDK 的 `main` 分支当前都是 v2 预发布，官方仍建议生产使用 v1.x；这意味着如果项目很快要进入 MCP 服务化，应避免直接绑定不稳定分支
+  - 对当前仓库最重要的不是“最快写出脚本”，而是“让 MVP 与后续 MCP 服务化保持一条连续演化路径”
+  - 从这一点看，TypeScript 更稳：
+    - 文件优先单进程 CLI 非常自然
+    - 后续接 MCP 服务、Streamable HTTP、stdio 都有官方 TypeScript SDK 与 Node 侧中间件
+    - JSON、Schema、CLI、文件 I/O、跨平台运行都较顺手
+    - 与 Codex / MCP / Inspector 生态的例子和工具链贴合度高
+  - Python 也可行，且原型速度很快，但当前官方明确提示主分支仍在 v2 开发中；如果后续目标是长期 MCP 服务化，会多一层版本迁移与依赖管理成本
+  - Go 在长期服务稳定性上有吸引力，但对当前以“极简原型 + 文件优先 + 快速迭代验证”为主的阶段来说，收益不如 TypeScript
+  - 文件格式方面：
+    - `agent_identity` 更适合 JSON 或 YAML 这类强结构格式
+    - 短期记忆和长期记忆原型更适合 JSON 文件，而不是一开始就用 Markdown
+    - Obsidian/Markdown 更适合作为后续长期知识层，而不是 MVP 的运行时主格式
+  - 测试与验证方面，第一阶段最需要的是：
+    - fixture 驱动的目录级验证
+    - CLI 黑盒测试
+    - 文件产物校验
+- 假设:
+  - 若项目在 MVP 后很快进入 MCP 服务化与多客户端接入，TypeScript/Node 的收益会进一步放大
+  - 若未来项目目标发生变化，转向重数据处理或研究脚本密集型工作流，Python 仍可作为辅栈引入，而不必成为主栈
+- 决策:
+  - 推荐主栈为：
+    - `TypeScript + Node.js`
+  - 推荐 MVP 技术组合为：
+    - 运行时：`Node.js`
+    - 语言：`TypeScript`
+    - 包管理：`pnpm`
+    - CLI 运行：`tsx`
+    - schema 校验：`zod`
+    - 测试：`vitest`
+    - 文件持久化：`JSON` 文件
+  - 推荐后续演化路线为：
+    - MVP：文件优先单进程 CLI
+    - 下一阶段：在同一代码基上增加 MCP server 入口
+    - 再下一阶段：为短期运行时引入轻量索引或 SQLite，但长期知识层继续保持文件优先
+- 未解问题:
+  - `agent_identity` 更适合 JSON 还是 YAML
+  - 第一阶段是否直接引入 MCP SDK，还是先做纯 CLI 内核，下一阶段再挂 MCP 入口
+  - `pnpm + tsx` 是否已足够，还是需要同时引入构建产物流程
+- 下一步:
+  - 向用户汇报技术选型建议与备选方案
+  - 如用户认可，再把 MVP 计划中的文件格式和 CLI 入口按该技术栈补具体
+
+## R-0034 将技术选型结论写入 MVP 计划目录
+
+- 日期: 2026-04-01
+- 目标: 将已确认的技术选型从研究记录沉淀为 `plans/mvp/` 下的独立文档，作为后续实现计划的输入
+- 输入:
+  - R-0033 的技术选型结论
+  - 用户确认偏好 `TypeScript + Node.js`
+- 动作:
+  - 在 `plans/mvp/` 下新增技术选型文档
+  - 固定 MVP 与后续迭代的推荐主栈、推荐工具组合、非目标和演化路线
+- 发现:
+  - 将技术选型与 MVP 实施计划分开，有利于后续独立调整实现节奏，而不需要重写技术判断
+- 假设:
+  - 只要主栈不变，后续 CLI、MCP 服务化、轻量索引增强都可以在同一代码基中连续演化
+- 决策:
+  - 技术选型文档单独保存在 `plans/mvp/` 下
+- 未解问题:
+  - `agent_identity.json` 的最小结构尚未冻结
+  - CLI 最小命令协议尚未冻结
+- 下一步:
+  - 继续定义 `agent_identity` 文件结构与 CLI 命令协议
+
+## R-0035 将单进程 CLI 交互模式收敛为“混合模式”
+
+- 日期: 2026-04-01
+- 目标: 固定 MVP CLI 的最小交互方式，避免后续在“单命令全包”和“完全拆分子命令”之间反复摇摆
+- 输入:
+  - 用户对 CLI 交互差异的澄清需求
+  - 用户确认接受 `混合模式`
+- 动作:
+  - 对比：
+    - `一次性 run`
+    - `子命令拆分`
+    - `混合模式`
+  - 结合 MVP 的“链路跑通 + 可靠性验证”目标收敛 CLI 方案
+- 发现:
+  - 如果只保留一个 `run`，虽然操作最短，但初始化与验证职责会被耦合进同一入口
+  - 如果完全拆成多个子命令，结构最清晰，但第一版命令面会更宽，不够极简
+  - `混合模式` 更适合当前阶段：
+    - `run` 作为主入口，保证链路跑通
+    - `init` 作为显式初始化入口
+    - `verify` 作为显式验证入口
+    - 必要时 `run` 可补最小自动初始化
+- 假设:
+  - 这种模式可以在不扩大第一版复杂度的前提下，保留未来做回归验证和排错的清晰切口
+- 决策:
+  - MVP CLI 采用 `混合模式`
+  - 后续应围绕最少三个命令设计：
+    - `init`
+    - `run`
+    - `verify`
+- 未解问题:
+  - `run` 是否默认自动创建缺失目录
+  - `verify` 是只做文件结构检查，还是顺带做一次最小回读验证
+- 下一步:
+  - 定义 `agent_identity.json` 最小结构
+  - 定义 `init / run / verify` 的最小命令协议
+
+## R-0036 定义 `agent_identity.json` 与 CLI 最小协议
+
+- 日期: 2026-04-01
+- 目标: 为 Codex `agent_identity` MVP 固定第一版 JSON 身份文件结构与单进程 CLI 最小命令协议
+- 输入:
+  - `TypeScript + Node.js` 技术选型
+  - `混合模式` CLI 交互方案
+  - 当前 `agent_identity` 契约文档
+- 动作:
+  - 在 `plans/mvp/` 下新增独立契约文档
+  - 固定 `agent_identity.json` 的五个最小字段
+  - 固定 CLI 的三个最小命令：`init / run / verify`
+- 发现:
+  - 当前最稳妥的 `agent_identity` 文件仍应只保留五个身份字段，不承载任何运行时或工具配置
+  - `init / run / verify` 已足够覆盖：
+    - 初始化
+    - 主链路执行
+    - 结构与回读验证
+  - 将 JSON 结构与 CLI 协议单独文档化，有利于后续实现时独立评审命令面与身份文件，而不污染总体计划
+- 假设:
+  - 只要这份契约保持稳定，后续即使把 CLI 核心逻辑抽到 MCP 服务层，也不需要重写身份资产结构
+- 决策:
+  - 在 `plans/mvp/` 下新增 `agent_identity.json` 与 CLI 契约文档
+- 未解问题:
+  - `run` 是否允许自动提示或自动补初始化
+  - 是否需要在第一版就支持自定义根目录参数
+- 下一步:
+  - 若用户认可，可进入具体实现准备
+
+## R-0037 补充 CLI 功能边界与命令使用说明
+
+- 日期: 2026-04-01
+- 目标: 将当前 CLI 的功能边界和全部命令使用方式正式写回计划文档，避免实现期对 CLI 职责产生扩张
+- 输入:
+  - 用户要求：
+    - 将 CLI 功能边界写回文档
+    - 同时补充所有指令使用说明
+  - 已有 `agent_identity` 与 CLI 契约文档
+- 动作:
+  - 在 CLI 契约文档中增加：
+    - `CLI 功能边界`
+    - `总体使用方式`
+    - `init / run / verify` 的使用说明
+    - 命令之间不可互相替代的边界
+  - 在总 MVP 计划中增加对该契约文档的引用
+- 发现:
+  - 若不把 CLI 边界显式写回文档，后续实现时很容易把 CLI 从“最小闭环入口”膨胀成“总控 runtime”
+  - 将边界说明和命令使用说明放在同一契约文档中，更利于实现时直接对照
+- 假设:
+  - 只要 CLI 边界保持清晰，后续即使扩展 MCP 入口，也可以把 CLI 保持为稳定的本地验证界面
+- 决策:
+  - CLI 边界与命令使用说明统一保存在 `plans/mvp/2026-04-01-agent-identity-and-cli-contract.md`
+- 未解问题:
+  - `run` 现在只定义为报错并提示先 `init`，后续是否需要支持自动初始化
+- 下一步:
+  - 若继续推进，可进入实现前最后确认或直接进入实现
+
+## R-0038 明确当前 Codex 与 CLI 的调用关系
+
+- 日期: 2026-04-01
+- 目标: 消除“CLI 不负责 MCP server 时，Codex 如何使用原型”的歧义，并把当前接入方式写回文档
+- 输入:
+  - 用户问题：若 CLI 不负责 MCP server，Codex 怎么和 CLI 通信
+  - 当前 MVP 边界：CLI 是本地单进程、文件优先、非 MCP
+- 动作:
+  - 在 CLI 契约文档中新增 `Codex 当前接入方式`
+  - 明确当前调用链是：
+    - Codex -> shell command -> CLI -> 本地文件目录
+  - 在总 MVP 计划中补充“当前 Codex 接入方式”的简述
+- 发现:
+  - 当前阶段最稳妥的方式仍是让 Codex 通过本地命令直接调用 CLI，而不是提前引入 MCP 包装层
+  - 这样可以把“核心链路验证”和“协议封装验证”分开，减少调试歧义
+  - CLI 在当前阶段是 Codex 的直接接入入口；MCP 只是后续演化方向，不是当前前提
+- 假设:
+  - 只要 CLI 的输入输出和目录布局保持稳定，后续增加 MCP wrapper 时不会破坏当前本地验证路径
+- 决策:
+  - 当前 Codex 与原型 CLI 的通信方式固定为本地 shell 调用
+  - 后续若进入 MCP 化，应以共享核心逻辑为原则，而不是替换 CLI
+- 未解问题:
+  - 后续 MCP 化时，是否保留完全一致的命令语义和参数面
+- 下一步:
+  - 若继续推进，可进入实现前最后确认或直接开始实现
+
+## R-0040 记录 MVP CLI 实现期的环境约束与最小实现决策
+
+- 日期: 2026-04-01
+- 目标: 记录开始实现 MVP CLI 时实际发现的运行环境事实，以及因此做出的最小实现决策
+- 输入:
+  - 本机 Node / npm / pnpm 可用性检查
+  - MVP 计划与 CLI 契约文档
+- 动作:
+  - 检查本机运行环境
+  - 验证 Node 24 是否可直接执行 `.ts`
+  - 验证 Node 内置测试是否可直接运行 `.ts` 测试文件
+- 发现:
+  - 当前环境具备：
+    - `node v24.13.0`
+    - `npm`
+  - 当前环境不具备：
+    - `pnpm`
+  - Node 24 可通过 `--experimental-strip-types` 直接运行 `.ts` 文件
+  - Node 24 内置测试也可通过 `--test --experimental-strip-types` 直接运行 `.ts` 测试
+  - 因此第一版 CLI 可以在不安装额外依赖的前提下，用纯 Node 内建能力完成最小可验证实现
+- 假设:
+  - 这种零依赖实现更适合当前 MVP，因为它能把验证重点放在链路和目录边界，而不是包管理和构建流程
+- 决策:
+  - 第一版 CLI 实现采用：
+    - TypeScript 源文件
+    - Node 原生 `--experimental-strip-types`
+    - Node 内置 test runner
+  - 暂不引入外部运行依赖
+  - `pnpm` 保留为后续工程化选项，不作为当前实现前提
+- 未解问题:
+  - 后续若进入更完整工程化阶段，是否仍保持零依赖运行，还是回到 `pnpm + tsx + vitest`
+- 下一步:
+  - 在当前实现基础上继续扩展 CLI 工程骨架与后续命令能力
+
+## R-0041 固定 `init` 为 session 外动作
+
+- 日期: 2026-04-02
+- 目标: 修正当前框架中 `init` 的语义位置，确保其不被误解为每个 session 的固定前置步骤
+- 输入:
+  - 用户新增强调：本项目核心特点是跨 session 的 Agent，`init` 不应属于每个 session
+  - 当前 MVP 计划与 CLI 契约文档
+- 动作:
+  - 回查现有文档中 `init / run / verify` 的边界描述
+  - 将 `init` 明确收敛为 session 外的资产初始化动作
+  - 将 `run` 明确收敛为 session 内主入口
+- 发现:
+  - 若不显式固定这条边界，后续实现很容易把 `init` 设计成“每轮先执行一次”的启动步骤
+  - 这会直接破坏“同一个 Agent 跨 session 持续存在”的核心前提
+- 假设:
+  - 只要 `init` 被固定为 session 外动作，后续无论是 CLI 还是 MCP 接入，都更容易保持 Agent 资产与 session 生命周期分离
+- 决策:
+  - `init` 固定为 Agent 资产初始化动作，不属于每个 session
+  - `run` 固定为 session 内一次执行链路的主入口
+  - 同一个 Agent 初始化一次后，应跨多个 session 复用同一身份文件与记忆目录
+- 未解问题:
+  - 后续是否要显式增加“provision”或“bootstrap”之类更不易误解的命令名
+- 下一步:
+  - 在后续实现与文档中持续保持这条边界
+
+## R-0042 为 Unity 优化专家默认 Agent 预置长期记忆
+
+- 日期: 2026-04-02
+- 目标: 创建一个新的默认 Agent，其身份定位为 Unity 项目优化专家，并基于官方资料预置一批第一阶段长期记忆
+- 输入:
+  - 用户要求：
+    - 创建新的默认 Agent
+    - 身份是 Unity 项目优化专家
+    - 对内存垃圾和性能瓶颈极度苛刻
+    - 预先在网上检索 Unity 和 C# 性能优化的通用经验并形成长期记忆
+  - Unity 官方手册 / API 文档
+  - Microsoft 官方 C# / .NET 性能文档
+- 来源:
+  - https://docs.unity3d.com/es/2021.1/Manual/Profiler.html
+  - https://docs.unity3d.com/cn/2021.2/Manual/performance-incremental-garbage-collection.html
+  - https://docs.unity3d.com/kr/current/ScriptReference/Pool.ObjectPool_1.html
+  - https://docs.unity3d.com/ru/2019.4/Manual/BestPracticeUnderstandingPerformanceInUnity7.html
+  - https://learn.microsoft.com/en-us/dotnet/csharp/advanced-topics/performance/
+  - https://learn.microsoft.com/en-us/dotnet/api/system.buffers.arraypool-1
+- 动作:
+  - 基于现有 `agents/` 目录结构创建新的默认 Agent 资产目录
+  - 编写符合当前最小契约的 `agent_identity.json`
+  - 从官方资料中提炼一批适合长期保留的通用优化经验，写入长期记忆目录
+- 发现:
+  - Unity 官方明确强调应先使用 Profiler 识别 CPU、memory、renderer 等具体瓶颈，再迭代优化
+  - Unity 官方明确说明 Incremental GC 能降低 GC spike，但不会让总 GC 成本更低
+  - Unity 官方 API 已提供 `UnityEngine.Pool.ObjectPool<T>`，适合作为频繁创建/销毁对象场景的优先起点
+  - Unity 官方手册建议在热路径中使用属性 ID 的整数接口，而不是重复使用字符串接口
+  - Microsoft 官方文档强调：性能优化前先测基线，只在 hot path 上做内存优化，并在每次修改后重新测量
+  - Microsoft 官方文档说明 `ArrayPool<T>` 适合降低频繁数组创建/销毁造成的 GC 压力
+- 假设:
+  - 这批经验足够作为 Unity 优化专家 Agent 的第一阶段长期记忆基线，但还不能替代项目级具体 profiling 结果
+- 决策:
+  - 新增默认 Agent：`unity-optimization-agent`
+  - 预置长期记忆只采用官方一手资料
+  - 长期记忆内容保持通用经验层，不混入具体项目结论
+- 未解问题:
+  - 后续是否要为该 Agent 增加 Unity 专项 `skill_pack`
+  - 是否要单独预置“避免 LINQ、避免 per-frame allocation、非分配物理 API”等更多 Unity 细项记忆
+- 下一步:
+  - 用现有 CLI 对新 Agent 运行 `verify`
+
+## R-0039 固定项目初始框架为 `projects/cli` 与 `agents/`
+
+- 日期: 2026-04-01
+- 目标: 在开始实现前固定最小工程骨架，避免后续把代码目录与 agent 运行目录混放
+- 输入:
+  - 用户要求：
+    - 开始搭建项目框架
+    - 框架根目录为 `projects/`
+    - 当前先落 `cli`
+    - 增加 `agents/` 作为默认 agent 存储目录和记忆目录
+    - 每个 agent 内设置 `agent_identity.json` 和记忆目录
+- 动作:
+  - 固定代码工程目录与运行时 agent 数据目录分离
+  - 决定先创建：
+    - `projects/cli/`
+    - `agents/<default-agent>/identity/agent_identity.json`
+    - `agents/<default-agent>/memory/short-term/`
+    - `agents/<default-agent>/memory/long-term/`
+    - `agents/<default-agent>/runs/`
+- 发现:
+  - 将 `projects/` 与 `agents/` 分离，能避免后续把源码、构建产物和运行时记忆数据混在一起
+  - 这种布局也更贴近当前 MVP 目标：CLI 是工程，agent 目录是默认运行时资产
+- 假设:
+  - 第一版先放一个默认 agent 样例，比只建空目录更利于后续尽快验证 `init / run / verify`
+- 决策:
+  - 当前实现骨架固定为：
+    - `projects/cli/`
+    - `agents/` 作为默认 agent 资产与记忆根目录
+- 未解问题:
+  - 默认 agent 的命名最终是否继续使用 `research-agent`
+  - 是否需要在第一版就支持多个 agent fixture
+- 下一步:
+  - 创建最小目录结构和默认 agent 样例

@@ -1,0 +1,19 @@
+{
+  "object_ref": "long-term:unity-optimization-agent:object-pooling",
+  "identity_id": "unity-optimization-agent",
+  "created_at": "2026-04-02T00:00:02.000Z",
+  "summary": "Prefer pooling for frequently created and destroyed runtime objects. In modern Unity, start from UnityEngine.Pool.ObjectPool<T> or related pooling APIs before inventing a custom pool.",
+  "source_type": "official_docs",
+  "source_title": "UnityEngine.Pool.ObjectPool<T>",
+  "source_url": "https://docs.unity3d.com/kr/current/ScriptReference/Pool.ObjectPool_1.html",
+  "evidence_refs": [
+    "unity-object-pool-api",
+    "unity-scripting-gameplay-methods"
+  ],
+  "tags": [
+    "pooling",
+    "allocations",
+    "cpu",
+    "runtime"
+  ]
+}

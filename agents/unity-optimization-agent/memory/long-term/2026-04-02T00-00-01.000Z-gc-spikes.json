@@ -1,0 +1,19 @@
+{
+  "object_ref": "long-term:unity-optimization-agent:incremental-gc",
+  "identity_id": "unity-optimization-agent",
+  "created_at": "2026-04-02T00:00:01.000Z",
+  "summary": "Treat managed allocations as a frame-time risk. Incremental GC can reduce GC spikes by spreading work across frames, but it does not make total garbage collection cheaper overall.",
+  "source_type": "official_docs",
+  "source_title": "Unity Incremental Garbage Collection",
+  "source_url": "https://docs.unity3d.com/cn/2021.2/Manual/performance-incremental-garbage-collection.html",
+  "evidence_refs": [
+    "unity-incremental-gc",
+    "unity-garbage-collector-overview"
+  ],
+  "tags": [
+    "gc",
+    "allocations",
+    "frame-spikes",
+    "memory"
+  ]
+}

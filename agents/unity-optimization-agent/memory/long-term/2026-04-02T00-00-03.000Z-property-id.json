@@ -1,0 +1,18 @@
+{
+  "object_ref": "long-term:unity-optimization-agent:property-id",
+  "identity_id": "unity-optimization-agent",
+  "created_at": "2026-04-02T00:00:03.000Z",
+  "summary": "Avoid repeated string-based property lookups in hot paths. Cache Animator, Material, and Shader property IDs and use integer overloads instead of string overloads.",
+  "source_type": "official_docs",
+  "source_title": "Unity General Optimizations",
+  "source_url": "https://docs.unity3d.com/ru/2019.4/Manual/BestPracticeUnderstandingPerformanceInUnity7.html",
+  "evidence_refs": [
+    "unity-general-optimizations-property-id"
+  ],
+  "tags": [
+    "hot-path",
+    "string-hashing",
+    "shader",
+    "animator"
+  ]
+}

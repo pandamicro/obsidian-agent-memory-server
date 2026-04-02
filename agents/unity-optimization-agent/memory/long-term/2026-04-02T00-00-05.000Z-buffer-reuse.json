@@ -1,0 +1,18 @@
+{
+  "object_ref": "long-term:unity-optimization-agent:buffer-reuse",
+  "identity_id": "unity-optimization-agent",
+  "created_at": "2026-04-02T00:00:05.000Z",
+  "summary": "When array churn becomes a measured source of pressure, reuse buffers instead of repeatedly allocating them. Prefer pool-backed reuse such as ArrayPool<T> for transient buffers on allocation-heavy paths.",
+  "source_type": "official_docs",
+  "source_title": "ArrayPool<T> Class",
+  "source_url": "https://learn.microsoft.com/nl-nl/dotnet/api/system.buffers.arraypool-1",
+  "evidence_refs": [
+    "dotnet-arraypool"
+  ],
+  "tags": [
+    "buffers",
+    "arraypool",
+    "gc",
+    "csharp"
+  ]
+}
