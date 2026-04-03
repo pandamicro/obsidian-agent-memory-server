@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, readdir } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { spawn } from 'node:child_process';
@@ -7,6 +7,8 @@ import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
 const cliPath = resolve(fileURLToPath(new URL('../src/cli.ts', import.meta.url)));
+const launcherPath = resolve(fileURLToPath(new URL('../../../bin/agents', import.meta.url)));
+const repoBindingPath = resolve(fileURLToPath(new URL('../../../.codex/agent-memory/active-agent.json', import.meta.url)));
 
 async function runCli(args: string[], cwd: string) {
   return new Promise<{ code: number | null; stdout: string; stderr: string }>((resolvePromise) => {
@@ -30,6 +32,52 @@ async function runCli(args: string[], cwd: string) {
       resolvePromise({ code, stdout, stderr });
     });
   });
+}
+
+async function runLauncher(
+  args: string[],
+  cwd: string,
+  env: NodeJS.ProcessEnv = {},
+) {
+  return new Promise<{ code: number | null; stdout: string; stderr: string }>((resolvePromise) => {
+    const child = spawn(launcherPath, args, {
+      cwd,
+      env: { ...process.env, ...env },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+
+    let stdout = '';
+    let stderr = '';
+
+    child.stdout.on('data', (chunk) => {
+      stdout += String(chunk);
+    });
+
+    child.stderr.on('data', (chunk) => {
+      stderr += String(chunk);
+    });
+
+    child.on('close', (code) => {
+      resolvePromise({ code, stdout, stderr });
+    });
+  });
+}
+
+async function writeRepoLocalScope(sharedRoot: string, agentId: string, workspaceRoot: string) {
+  const scopeDir = join(sharedRoot, 'agents', agentId, 'identity');
+  await mkdir(scopeDir, { recursive: true });
+  await writeFile(
+    join(scopeDir, 'agent_scope.json'),
+    `${JSON.stringify(
+      {
+        scope_type: 'repo-local',
+        workspace_root: workspaceRoot,
+      },
+      null,
+      2,
+    )}\n`,
+    'utf8',
+  );
 }
 
 test('init creates agent directories and agent_identity.json', async () => {
@@ -121,4 +169,123 @@ test('run fails with init guidance when agent identity is missing', async () => 
 
   assert.equal(runResult.code, 1);
   assert.match(runResult.stderr, /run init first/i);
+});
+
+test('launcher writes into the shared root and leaves the caller workspace untouched', async () => {
+  const workspaceRoot = await mkdtemp(join(tmpdir(), 'agent-launcher-workspace-'));
+  const sharedRoot = await mkdtemp(join(tmpdir(), 'agent-launcher-shared-'));
+
+  const result = await runLauncher(
+    ['init', '--agent-id', 'shared-launcher-agent'],
+    workspaceRoot,
+    {
+      OBSIDIAN_AGENT_MEMORY_SERVER_SHARED_ROOT: sharedRoot,
+    },
+  );
+
+  assert.equal(result.code, 0);
+
+  const agentRoot = join(sharedRoot, 'agents', 'shared-launcher-agent');
+  const identityPath = join(agentRoot, 'identity', 'agent_identity.json');
+
+  const identity = JSON.parse(await readFile(identityPath, 'utf8'));
+  assert.equal(identity.agent_id, 'shared-launcher-agent');
+  assert.equal(identity.canonical_name, 'Shared Launcher Agent');
+  assert.equal(identity.specialization, 'shared-launcher');
+
+  const runResult = await runLauncher(
+    ['run', '--agent-id', 'shared-launcher-agent', '--input', 'shared root check'],
+    workspaceRoot,
+    {
+      OBSIDIAN_AGENT_MEMORY_SERVER_SHARED_ROOT: sharedRoot,
+    },
+  );
+
+  assert.equal(runResult.code, 0);
+  assert.deepEqual(await readdir(join(workspaceRoot)), []);
+  assert.equal((await readdir(join(agentRoot, 'memory', 'short-term'))).length, 1);
+  assert.equal((await readdir(join(agentRoot, 'memory', 'long-term'))).length, 1);
+});
+
+test('launcher list discovers shared agents from another workspace', async () => {
+  const workspaceRoot = await mkdtemp(join(tmpdir(), 'agent-launcher-list-workspace-'));
+  const sharedRoot = await mkdtemp(join(tmpdir(), 'agent-launcher-list-shared-'));
+
+  assert.equal(
+    (
+      await runLauncher(['init', '--agent-id', 'research-agent'], workspaceRoot, {
+        OBSIDIAN_AGENT_MEMORY_SERVER_SHARED_ROOT: sharedRoot,
+      })
+    ).code,
+    0,
+  );
+  assert.equal(
+    (
+      await runLauncher(['init', '--agent-id', 'unity-optimization-agent'], workspaceRoot, {
+        OBSIDIAN_AGENT_MEMORY_SERVER_SHARED_ROOT: sharedRoot,
+      })
+    ).code,
+    0,
+  );
+
+  const listResult = await runLauncher(['list'], workspaceRoot, {
+    OBSIDIAN_AGENT_MEMORY_SERVER_SHARED_ROOT: sharedRoot,
+  });
+
+  assert.equal(listResult.code, 0);
+
+  const listed = JSON.parse(listResult.stdout) as Array<{ agent_id: string }>;
+  assert.deepEqual(
+    listed.map((entry) => entry.agent_id),
+    ['research-agent', 'unity-optimization-agent'],
+  );
+});
+
+test('repo-local scoped agents are visible only from their canonical workspace', async () => {
+  const canonicalWorkspace = await mkdtemp(join(tmpdir(), 'agent-scope-canonical-'));
+  const foreignWorkspace = await mkdtemp(join(tmpdir(), 'agent-scope-foreign-'));
+  const sharedRoot = await mkdtemp(join(tmpdir(), 'agent-scope-shared-'));
+
+  assert.equal(
+    (
+      await runLauncher(['init', '--agent-id', 'agentic-memory-expert'], canonicalWorkspace, {
+        OBSIDIAN_AGENT_MEMORY_SERVER_SHARED_ROOT: sharedRoot,
+      })
+    ).code,
+    0,
+  );
+  await writeRepoLocalScope(sharedRoot, 'agentic-memory-expert', canonicalWorkspace);
+
+  const canonicalList = await runLauncher(['list'], canonicalWorkspace, {
+    OBSIDIAN_AGENT_MEMORY_SERVER_SHARED_ROOT: sharedRoot,
+  });
+  assert.equal(canonicalList.code, 0);
+  assert.match(canonicalList.stdout, /agentic-memory-expert/);
+
+  const foreignList = await runLauncher(['list'], foreignWorkspace, {
+    OBSIDIAN_AGENT_MEMORY_SERVER_SHARED_ROOT: sharedRoot,
+  });
+  assert.equal(foreignList.code, 0);
+  assert.doesNotMatch(foreignList.stdout, /agentic-memory-expert/);
+
+  const foreignRun = await runLauncher(
+    ['run', '--agent-id', 'agentic-memory-expert', '--input', 'scope check'],
+    foreignWorkspace,
+    {
+      OBSIDIAN_AGENT_MEMORY_SERVER_SHARED_ROOT: sharedRoot,
+    },
+  );
+  assert.notEqual(foreignRun.code, 0);
+  assert.match(foreignRun.stderr, /scoped/i);
+
+  const foreignVerify = await runLauncher(['verify', '--agent-id', 'agentic-memory-expert'], foreignWorkspace, {
+    OBSIDIAN_AGENT_MEMORY_SERVER_SHARED_ROOT: sharedRoot,
+  });
+  assert.notEqual(foreignVerify.code, 0);
+  assert.match(foreignVerify.stderr, /scoped/i);
+});
+
+test('repository default binding points to agentic-memory-expert', async () => {
+  const binding = JSON.parse(await readFile(repoBindingPath, 'utf8')) as { agent_id?: string };
+  assert.equal(binding.agent_id, 'agentic-memory-expert');
 });

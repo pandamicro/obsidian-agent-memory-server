@@ -1,6 +1,7 @@
 import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
+import { realpathSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 
 type AgentIdentity = {
   agent_id: string;
@@ -9,6 +10,41 @@ type AgentIdentity = {
   mission: string;
   lineage: string;
 };
+
+type AgentSummary = Pick<
+  AgentIdentity,
+  'agent_id' | 'canonical_name' | 'specialization' | 'lineage'
+> & {
+  path: string;
+};
+
+type AgentScope = {
+  scope_type?: 'repo-local';
+  workspace_root?: string;
+};
+
+function resolveStorageRoot() {
+  return (
+    process.env.OBSIDIAN_AGENT_MEMORY_SERVER_SHARED_ROOT ??
+    process.env.OBSIDIAN_AGENT_MEMORY_SERVER_ROOT ??
+    process.cwd()
+  );
+}
+
+function resolveWorkspaceRoot() {
+  return (
+    process.env.OBSIDIAN_AGENT_MEMORY_SERVER_WORKSPACE_ROOT ??
+    process.cwd()
+  );
+}
+
+function canonicalizePath(path: string): string {
+  try {
+    return realpathSync(path);
+  } catch {
+    return resolve(path);
+  }
+}
 
 function parseArgs(argv: string[]) {
   const [command, ...rest] = argv;
@@ -85,6 +121,38 @@ async function handleInit(agentId: string, rootDir: string) {
   console.log(`Identity file: ${identityPath}`);
 }
 
+async function readAgentScope(agentId: string, rootDir: string): Promise<AgentScope | null> {
+  const scopePath = join(rootDir, 'agents', agentId, 'identity', 'agent_scope.json');
+
+  try {
+    const content = await readFile(scopePath, 'utf8');
+    return JSON.parse(content) as AgentScope;
+  } catch {
+    return null;
+  }
+}
+
+async function isAgentVisibleToWorkspace(
+  agentId: string,
+  rootDir: string,
+  workspaceRoot: string,
+): Promise<{ visible: boolean; scopeRoot?: string }> {
+  const scope = await readAgentScope(agentId, rootDir);
+  if (!scope || scope.scope_type !== 'repo-local') {
+    return { visible: true };
+  }
+
+  const scopeRoot = scope.workspace_root?.trim();
+  if (!scopeRoot) {
+    return { visible: false, scopeRoot: '<missing>' };
+  }
+
+  return {
+    visible: canonicalizePath(scopeRoot) === canonicalizePath(workspaceRoot),
+    scopeRoot: canonicalizePath(scopeRoot),
+  };
+}
+
 async function readIdentity(agentId: string, rootDir: string) {
   const identityPath = join(rootDir, 'agents', agentId, 'identity', 'agent_identity.json');
   let content: string;
@@ -119,6 +187,57 @@ async function readIdentity(agentId: string, rootDir: string) {
   }
 
   return identity as AgentIdentity;
+}
+
+async function listAgents(rootDir: string, workspaceRoot: string) {
+  const agentsDir = join(rootDir, 'agents');
+
+  let entries;
+  try {
+    entries = await readdir(agentsDir, { withFileTypes: true });
+  } catch (error) {
+    const typed = error as NodeJS.ErrnoException;
+    if (typed.code === 'ENOENT') {
+      return [] as AgentSummary[];
+    }
+    throw error;
+  }
+
+  const summaries: AgentSummary[] = [];
+
+  for (const entry of entries) {
+    if (!entry.isDirectory()) {
+      continue;
+    }
+
+    const agentId = entry.name;
+    try {
+      const visibility = await isAgentVisibleToWorkspace(agentId, rootDir, workspaceRoot);
+      if (!visibility.visible) {
+        continue;
+      }
+      const identity = await readIdentity(agentId, rootDir);
+      summaries.push({
+        agent_id: identity.agent_id,
+        canonical_name: identity.canonical_name,
+        specialization: identity.specialization,
+        lineage: identity.lineage,
+        path: join(agentsDir, agentId),
+      });
+    } catch {
+      continue;
+    }
+  }
+
+  summaries.sort((left, right) => left.agent_id.localeCompare(right.agent_id));
+  return summaries;
+}
+
+async function assertAgentVisible(agentId: string, rootDir: string, workspaceRoot: string) {
+  const visibility = await isAgentVisibleToWorkspace(agentId, rootDir, workspaceRoot);
+  if (!visibility.visible) {
+    throw new Error(`Agent identity ${agentId} is scoped to ${visibility.scopeRoot}`);
+  }
 }
 
 function createTimestamp() {
@@ -203,7 +322,8 @@ async function readLatestLongTermObject(longTermDir: string) {
   };
 }
 
-async function handleVerify(agentId: string, rootDir: string) {
+async function handleVerify(agentId: string, rootDir: string, workspaceRoot: string) {
+  await assertAgentVisible(agentId, rootDir, workspaceRoot);
   const agentRoot = join(rootDir, 'agents', agentId);
   const identityDir = join(agentRoot, 'identity');
   const shortTermDir = join(agentRoot, 'memory', 'short-term');
@@ -224,9 +344,15 @@ async function handleVerify(agentId: string, rootDir: string) {
   console.log(`Latest long-term path: ${latestLongTerm.path}`);
 }
 
+async function handleList(rootDir: string, workspaceRoot: string) {
+  const agents = await listAgents(rootDir, workspaceRoot);
+  console.log(JSON.stringify(agents, null, 2));
+}
+
 async function main() {
   const { command, options } = parseArgs(process.argv.slice(2));
-  const rootDir = process.cwd();
+  const rootDir = resolveStorageRoot();
+  const workspaceRoot = resolveWorkspaceRoot();
 
   if (command === 'init') {
     const agentId = options.get('agent-id');
@@ -246,6 +372,7 @@ async function main() {
     if (!input) {
       throw new Error('Missing required option: --input');
     }
+    await assertAgentVisible(agentId, rootDir, workspaceRoot);
     await handleRun(agentId, input, rootDir);
     return;
   }
@@ -255,7 +382,12 @@ async function main() {
     if (!agentId) {
       throw new Error('Missing required option: --agent-id');
     }
-    await handleVerify(agentId, rootDir);
+    await handleVerify(agentId, rootDir, workspaceRoot);
+    return;
+  }
+
+  if (command === 'list') {
+    await handleList(rootDir, workspaceRoot);
     return;
   }
 

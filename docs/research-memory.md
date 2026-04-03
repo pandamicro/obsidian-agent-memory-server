@@ -1689,6 +1689,40 @@
 - 下一步:
   - 用现有 CLI 对新 Agent 运行 `verify`
 
+## R-0043 回答预设 identity 与外部 Codex session 使用条件
+
+- 日期: 2026-04-03
+- 目标: 回答当前仓库中有哪些预设 `agent_identity`，并判断现有 MVP 是否已经满足外部 Codex session 直接使用的条件
+- 输入:
+  - `agents/` 目录
+  - `projects/cli/src/cli.ts`
+  - `plans/mvp/2026-04-01-agent-identity-and-cli-contract.md`
+  - `docs/research-memory.md` 中关于 `init / run / verify` 边界与 Codex 接入方式的既有记录
+  - `projects/cli/test/cli.test.ts` 的执行结果
+- 动作:
+  - 盘点 `agents/` 下现有身份资产
+  - 核对 CLI 的输入输出和目录布局
+  - 运行 CLI 测试，验证 `init / run / verify` 的本地闭环
+- 发现:
+  - 当前仓库中存在两个预设 `agent_identity`：
+    - `research-agent`
+    - `unity-optimization-agent`
+  - `research-agent` 定位为研究型 Agent，`unity-optimization-agent` 定位为 Unity 性能优化专家
+  - CLI 当前以本地 shell 命令方式工作，`init / run / verify` 都围绕 `agents/<agent_id>/...` 的本地目录布局展开
+  - `plans/mvp/2026-04-01-agent-identity-and-cli-contract.md` 已明确当前 Codex 接入方式不是 MCP，而是本地命令调用
+  - `npm --prefix projects/cli test` 通过，说明当前最小链路在本仓库内可运行
+- 假设:
+  - “外部 Codex session 可使用”在这里不是指某个固定后端能力，而是指该 session 具备对同一仓库工作区的本地 shell 执行能力
+  - 如果外部 session 不能访问这个仓库、不能执行本地命令，或没有 Node 24 环境，那么当前 MVP 不能直接成立
+- 决策:
+  - 将当前 MVP 的使用条件收敛为“同一工作区内、可执行本地命令的 Codex session”
+  - 暂不把 MCP、远程服务或跨机器接入视为当前 MVP 已满足的能力
+- 未解问题:
+  - 是否需要为“外部 Codex session”补一份显式的接入说明，避免把“本地 shell 调用”误解成“任意远程会话都可直接使用”
+  - 是否要把 `research-agent` / `unity-optimization-agent` 进一步整理成统一的预置目录索引页
+- 下一步:
+  - 若继续完善，可补一份“预设 Agent 索引”或“外部会话接入说明”
+
 ## R-0039 固定项目初始框架为 `projects/cli` 与 `agents/`
 
 - 日期: 2026-04-01
@@ -1722,3 +1756,488 @@
   - 是否需要在第一版就支持多个 agent fixture
 - 下一步:
   - 创建最小目录结构和默认 agent 样例
+
+## R-0044 讨论本机全局 `agents` 命令的包装方式
+
+- 日期: 2026-04-03
+- 目标: 设计一个能在本机其他项目中直接调用的 `agents` 命令入口，并让它稳定指向当前仓库的 CLI
+- 输入:
+  - 用户要求：在本机其他项目中直接调用 `agents` 命令
+  - 当前 CLI 实现：`projects/cli/src/cli.ts`
+  - 当前 CLI 使用 `process.cwd()` 作为运行根目录
+- 动作:
+  - 复核当前 CLI 的运行方式和目录边界
+  - 讨论 `PATH` 级入口、仓库内 launcher、npm bin 三种包装方式
+  - 确认当前更适合固定绝对路径的本机 launcher
+- 发现:
+  - 当前 CLI 若从任意项目调用，会把调用者所在目录作为运行根目录，这符合“在别的项目里操作该项目自身的 agents 目录”的预期
+  - 如果 wrapper 在进入 CLI 前 `cd` 回本仓库，会把记忆读写错误地固定到 memory-server 仓库，不符合跨项目调用目标
+  - 对“本机其他项目直接调用”的需求，最关键的是让 `agents` 命令进入用户 `PATH`，而不是只在仓库内存在
+- 假设:
+  - 当前仓库路径可以视为固定绝对路径，因此 wrapper 可以先采用硬编码仓库位置
+  - 如果后续需要搬迁仓库，再补一层环境变量或重装脚本即可
+- 决策:
+  - `agents` 的包装入口应使用本机 `PATH` 中的可执行 launcher
+  - launcher 只负责转发参数到当前仓库的 CLI，不改变调用者工作目录
+  - 入口实现优先考虑 POSIX shell shim，避免把 Node 安装路径或项目构建物额外固化进系统级路径
+- 未解问题:
+  - launcher 是否只放在用户级目录，如 `~/.local/bin/agents`，还是还要在仓库内保留一份受控副本
+  - 是否需要提供一个一键安装/更新脚本，帮助重建这个 PATH 入口
+- 下一步:
+  - 若继续实现，可创建 launcher 并把它挂到用户 `PATH`
+
+## R-0045 落地本机全局 `agents` launcher 并验证跨目录调用
+
+- 日期: 2026-04-03
+- 目标: 将仓库内 `projects/cli` 暴露为本机可直接调用的 `agents` 命令，并验证它在其他目录下仍以调用者 cwd 作为运行根目录
+- 输入:
+  - 已批准的 launcher 设计
+  - `projects/cli/src/cli.ts`
+  - `projects/cli/test/cli.test.ts`
+  - 本机 `PATH` 配置
+- 动作:
+  - 新增仓库内 `bin/agents` POSIX launcher
+  - 将 launcher 通过 `~/bin/agents` 暴露到本机 `PATH`
+  - 给 launcher 增加测试，验证它在任意 cwd 下会写入该 cwd 对应的 `agents/` 目录
+  - 运行 `npm --prefix projects/cli test`
+  - 从 `/tmp` 执行 `agents verify --agent-id research-agent`，确认命令已被 shell 解析且仍按当前目录运行
+- 发现:
+  - `bin/agents` 能把参数无损转发到 `projects/cli/src/cli.ts`
+  - launcher 未改变调用者 cwd，因此在 `/tmp` 执行时会尝试读取 `/private/tmp/agents/research-agent/identity`
+  - `command -v agents` 解析到 `/Users/screamcart-agent0/bin/agents`，说明本机入口已经可见
+  - CLI 测试新增的 launcher 用例通过，说明仓库内路径与实际入口一致
+- 假设:
+  - 目前采用固定绝对路径指向仓库，适合当前单机使用场景；如果仓库搬迁，需要重新安装 launcher
+- 决策:
+  - 保留 `bin/agents` 作为仓库内受控入口
+  - 使用 `~/bin/agents` 作为本机全局暴露点
+  - 不在 launcher 中切换工作目录，以保持跨项目调用语义
+- 未解问题:
+  - 后续是否要把 launcher 安装步骤做成一个可重复执行的 `install` 脚本
+  - 是否需要同时维护 `~/.local/bin/agents` 作为第二个暴露点
+- 下一步:
+  - 若继续工程化，可补一个安装脚本和卸载脚本，但当前已满足本机调用需求
+
+## R-0046 说明其他仓库路径如何启用特定 `agent_identity`
+
+- 日期: 2026-04-03
+- 目标: 回答“在本机其他仓库路径里，如何用新的 `agents` 命令启用特定 `agent_identity`”
+- 输入:
+  - `projects/cli/src/cli.ts`
+  - 当前 `agents` launcher
+  - 用户问题：在本机其他仓库路径该怎么启用特定 agent identity
+- 动作:
+  - 回查 CLI 的 `rootDir = process.cwd()` 语义
+  - 回查 `init / run / verify` 的目录落点
+  - 将启用流程收敛为“在目标仓库 cwd 下初始化或复用本地 identity”
+- 发现:
+  - `agents` 命令会按调用时的当前目录作为根目录，因此每个仓库路径都拥有自己的 `agents/<agent_id>/...`
+  - `init` 会在当前仓库下创建 `agents/<agent_id>/identity/agent_identity.json` 和记忆目录
+  - `run` / `verify` 会在同一当前仓库路径下读取同一套 identity 与记忆文件
+- 假设:
+  - “启用特定 agent identity”在用户语境里指在目标仓库中创建并使用该 identity，而不是切换到全局共享的单一状态
+- 决策:
+  - 对任意本机仓库路径，启用步骤都应是：进入该仓库目录 -> `agents init --agent-id <id>` -> `agents run ...`
+  - 若目标仓库里已经存在对应 identity，则可直接跳过 `init`
+- 未解问题:
+  - 是否需要再提供一个“复制预设 identity 到新仓库”的快捷命令
+  - 是否要把 `research-agent` / `unity-optimization-agent` 进一步整理成可枚举的预设列表
+- 下一步:
+  - 如果需要，可补一份面向使用者的最短命令说明
+
+## R-0047 将当前仓库明确为本机机器级共享源
+
+- 日期: 2026-04-03
+- 目标: 把“当前仓库作为这台机器上所有仓库可引用的共享 `agent_identity` 源”写成仓库级硬规则
+- 输入:
+  - 用户要求：本机所有仓库都可以引用本仓库的所有 `agent_identity`
+  - 当前 `agents` launcher
+  - 当前 `AGENTS.md`
+- 动作:
+  - 将共享语义上升为 `AGENTS.md` 的最高优先级规则
+  - 明确调用者仓库只是运行上下文，不是 identity 真源
+  - 保持当前 CLI 的 cwd 语义不变，但把身份与共享记忆的归宿明确指向当前仓库
+- 发现:
+  - 仅有本机 launcher 还不足以表达“全局共享”的产品目标，必须把共享源、写回路径和调用者角色写进仓库级约束
+  - 如果不把共享源写进 `AGENTS.md`，后续很容易重新滑回每仓库一份独立 identity 的默认理解
+- 假设:
+  - 机器级共享的语义可以先以本仓库为 canonical source 来表达，后续如需迁移，只改共享源定位，不改共享规则本身
+- 决策:
+  - 当前仓库被定义为本机 `agent_identity` 与共享记忆的机器级共享源
+  - 其他仓库通过全局 `agents` 命令访问并写回同一份共享身份与共享记忆
+  - 默认不为其他仓库创建平行 identity 副本
+- 未解问题:
+  - 后续是否需要把共享源定位进一步抽象成可配置路径，而不是直接绑定到当前仓库
+  - 是否需要增加一个显式的“共享身份列表”文档，方便其他仓库知道可引用哪些 identity
+- 下一步:
+  - 如果继续推进，实现层需要再把 launcher 与共享源定位对齐，避免只在文档层生效
+
+## R-0048 将 `agents` 运行时切换为默认共享根
+
+- 日期: 2026-04-03
+- 目标: 让通过全局 `agents` 命令启动的 CLI 默认使用当前仓库作为共享根，而不是调用者仓库的本地目录
+- 输入:
+  - `projects/cli/src/cli.ts`
+  - `bin/agents`
+  - 现有测试与文档
+  - `/tmp` 下的真实 launcher smoke test
+- 动作:
+  - 在 CLI 中新增共享根解析逻辑，优先读取 `OBSIDIAN_AGENT_MEMORY_SERVER_SHARED_ROOT`
+  - 在 launcher 中默认注入共享根，并保留环境变量覆盖口
+  - 更新测试，使 launcher 在另一个 cwd 下写入共享共享根而不是调用者工作区
+  - 从 `/tmp` 真实执行 `agents run --agent-id research-agent --input "global shared root smoke test"`
+  - 随后执行 `agents verify --agent-id research-agent`
+- 发现:
+  - 通过 launcher 从 `/tmp` 运行时，输出文件实际落在 `/Users/screamcart-agent0/obsidian-agent-memory-server/agents/research-agent/...`
+  - `agents verify` 在独立调用中成功读取了刚写入的 long-term 对象，说明共享根读写链路成立
+  - 直接运行 CLI 仍保留 `process.cwd()` 语义，便于本地测试和特殊覆盖场景
+  - `npm --prefix projects/cli test` 通过，说明共享根改动没有破坏 direct CLI 行为，也没有破坏 launcher 路径
+- 假设:
+  - 目前“全局共享”主要由 launcher 驱动；如果后续希望所有入口都强制共享，还需要进一步收紧直接 CLI 的默认行为
+- 决策:
+  - 全局 `agents` launcher 默认指向当前仓库共享根
+  - `OBSIDIAN_AGENT_MEMORY_SERVER_SHARED_ROOT` 作为显式覆盖口保留
+  - 直接执行 CLI 仍保持本地 cwd 语义，不作为全局入口默认路径
+- 未解问题:
+  - 是否需要继续把 `research-agent` 之外的预设 identity 也补齐完整 memory skeleton，方便其他仓库即开即用
+  - 是否要新增一个显式命令，区分“共享根运行”与“本地 cwd 运行”
+- 下一步:
+  - 如果继续推进，可把共享根配置抽成更明确的安装文档或 bootstrap 脚本
+
+## R-0049 区分 Codex session 挂载与全局 skill 的角色
+
+- 日期: 2026-04-03
+- 目标: 回答“将 `agents` 挂载到另一个 Codex session 中”时，是否需要一个独特的全局 skill，以及它和共享 launcher 的关系
+- 输入:
+  - 用户问题：需要将 `agents` 挂载到另一个 Codex session 中
+  - OpenAI 官方文档中的 Skills / Codex 相关页面
+  - 当前仓库的 `agents` launcher 与共享根实现
+- 动作:
+  - 查阅官方文档，确认 Skills 是模型支持的工具能力之一
+  - 对比“共享状态源”和“session 内使用入口”两层职责
+  - 结合当前 launcher 设计，判断 skill 是否能替代 machine-level mount
+- 发现:
+  - 官方文档显示，GPT-5.4 / GPT-5.4 mini / GPT-5.4 nano 等模型支持 `Skills` 工具能力
+  - 官方导航也把 `Skills` 作为工具类别之一列出，说明它是受支持的工具形态，而不是本项目所需的机器级共享状态存储
+  - 当前仓库的 `agents` 共享语义来自 launcher + 共享根环境变量，而不是来自 Codex session 本身
+  - 因此，“全局 skill”最多可以充当会话内的使用说明或调用包装，不会自动把本机 launcher 注入到另一个独立 session，也不会替代共享根
+- 假设:
+  - 如果另一个 Codex session 与当前机器共享同一文件系统和 PATH，那么它可以通过安装同一个 `agents` launcher 来复用共享源
+  - 如果另一个 Codex session 是隔离环境或远程环境，则仅靠 skill 不足以让它看到本机路径
+- 决策:
+  - 共享状态仍以机器级 launcher + 共享根为主
+  - skill 只能作为可选的使用说明层或 bootstrap 层，不作为共享记忆的真源
+  - 若需要另一个 Codex session 直接“挂载”，优先让它获得同样的 launcher、共享根和环境变量，而不是先发明一个全局 skill
+- 未解问题:
+  - 是否要为另一个 Codex session 设计一个专门的 bootstrap skill，用来标准化安装与调用流程
+  - 如果未来要支持远程/隔离 session，是否需要把共享根升级成远程服务或 MCP 后端
+- 下一步:
+  - 如果继续推进，可把“Codex session 接入说明”单独整理成一页文档
+
+## R-0050 为 Codex session 增加发现入口与 bootstrap skill
+
+- 日期: 2026-04-03
+- 目标: 让另一个 FullAccess Codex session 能发现共享 `agent_identity`，选择对应 agent，并通过 `agents` 读写同一份共享记忆
+- 输入:
+  - 用户要求：在另一个 Codex session 中可发现当前存在的 agents，存取记忆
+  - 当前共享根 launcher 语义
+  - 新增的 `agents list` 命令
+  - 新增并安装的 `agents-bootstrap` skill
+- 动作:
+  - 在 CLI 中新增 `list` 命令，枚举共享根下的有效 `agent_identity`
+  - 将 `list` 输出为 JSON 数组，便于 session 内解析和选择
+  - 创建薄的 `agents-bootstrap` skill，仅负责 `list -> run -> verify` 的会话流程
+  - 将该 skill 安装到本机 Codex skills 目录
+  - 运行 `npm --prefix projects/cli test`
+  - 从 `/tmp` 真实执行 `agents list`
+- 发现:
+  - `agents list` 能返回当前共享根里的有效 agent 列表，并包含 identity 元数据与路径
+  - `agents list` 在 `/tmp` 也能工作，说明另一个 session 只要拥有 PATH 中的 launcher 和共享根访问权限，就能发现当前共享源
+  - 薄 bootstrap skill 只提供会话流程，不承担记忆真源职责
+- 假设:
+  - 未来如果另一个 session 需要更强的自动化，可以在 bootstrap skill 之上再叠加更强的编排层，但不应把 skill 本身当成共享状态存储
+- 决策:
+  - `agents list` 作为共享 identity 的发现入口
+  - `agents-bootstrap` 作为会话内最薄入口说明 skill
+  - 读写记忆仍通过共享 launcher 和共享根完成
+- 未解问题:
+  - 是否需要把 `agents list` 增加筛选参数，以支持更细粒度的会话选型
+  - 是否需要在 skill 中加入自动选择规则，减少 session 手动决策
+- 下一步:
+  - 如果继续推进，可以先为 `agents list` 增加更稳定的机器可读选项，再扩展自动选择逻辑
+
+## R-0057 纠正对 Codex hooks 的触发边界理解
+
+- 日期: 2026-04-03
+- 目标: 回答“为什么前面聊了这么多 wrapper 和注入机制，现在才确认 hooks 能满足需求”
+- 输入:
+  - 用户对 hooks 机制的追问
+  - OpenAI 官方 Codex hooks 文档
+  - 当前仓库的 wrapper / invariant block / agents-bootstrap 设计
+- 动作:
+  - 重新核对 hooks 可触发事件与可注入字段
+  - 对比 compaction 与 turn 边界
+  - 修正先前把 wrapper 说得过重的理解
+- 发现:
+  - Codex hooks 确实提供了会话级触发点：`SessionStart`、`UserPromptSubmit`、`Stop`、`PreToolUse`、`PostToolUse`
+  - `SessionStart`、`UserPromptSubmit`、`Stop` 支持 `systemMessage`，可以用于重新注入极短约束
+  - hooks 配置位于 `~/.codex/hooks.json` 或 `<repo>/.codex/hooks.json`，并通过 `config.toml` 的 `codex_hooks = true` 开启
+  - 官方文档没有明确给出一个 `Compaction` 事件 hook，因此无法把“压缩瞬间”当作直接注入点
+  - 先前把 wrapper 讲重了，原因是当时还没定位到 hooks 文档，而是把问题误当成只能靠外层脚本解决
+- 假设:
+  - 如果 Codex 在内部发生 compaction，但没有对外暴露对应 hook，那么最接近的策略仍是 turn 边界重注入，而不是 compaction 瞬时注入
+- 决策:
+  - 以后对长会话的约束重注入，优先使用 hooks，而不是纯 wrapper
+  - wrapper 退化为安装、路径和环境准备层
+  - 如果需要“压缩后立即恢复约束”，只能通过 turn 边界和会话重启间接实现
+- 未解问题:
+  - 是否需要把 invariant block 的内容压缩到足以在 `systemMessage` 中频繁重发而不造成噪音
+  - 是否需要一个专门的 `stop_continue` 或 `session_start` hook 脚本模板
+- 下一步:
+  - 如果继续推进，应该直接产出 hooks 配置和注入脚本，而不是继续扩展 wrapper 讨论
+
+## R-0058 清理冗余的会话触发推导记录
+
+- 日期: 2026-04-03
+- 目标: 删除已经被后续结论覆盖的重复推导，降低 memo 噪音
+- 动作:
+  - 移除 R-0051 到 R-0056
+  - 保留 R-0049、R-0050 与 R-0057 作为关键转折和最终结论
+- 发现:
+  - R-0051 到 R-0056 主要重复了启动上下文、长会话协议、周期性注入和 wrapper 控制的同一条推导链
+  - 这些内容的最终结论已经被 R-0057 的 hooks 纠正所覆盖
+- 决策:
+  - 研究 memo 只保留对未来判断仍有增量信息的记录
+  - 对已经被后续结论吸收的中间推导，优先删除而不是长期保留
+
+## R-0059 收敛 Codex hooks 的记忆注入边界与脚本分工
+
+- 日期: 2026-04-03
+- 目标: 为 `short-term-feedback` 与 `long-term-memory-index` 设计最小 hooks 触发面和对应脚本职责
+- 输入:
+  - 用户要求：增加 hooks 注册机制，让其他 Codex session 在特定时机存储或提取记忆
+  - 现有动态记忆文档：`short-term-feedback.md`、`long-term-memory-index.md`
+  - 官方 Codex hooks 文档
+- 动作:
+  - 核对 hooks 的官方触发边界与可注入能力
+  - 收敛“记忆写入/提取”与“turn 内提示注入”的责任分层
+  - 约束脚本实现必须复用现有 `agents` CLI，而不是直接写文件
+- 发现:
+  - `SessionStart` 适合做会话启动时的长期记忆预热/冷启动恢复
+  - `UserPromptSubmit` 适合做每轮输入前的短期反馈归并与检索触发
+  - `Stop` 适合做收尾记账、状态回填和必要的记忆落盘
+  - `PreToolUse` / `PostToolUse` 适合作为 Bash 级证据采集与结果回填的局部护栏，但不应承担全局记忆主流程
+  - 由于 `PreToolUse` 目前只拦截 Bash，脚本分工应避免依赖它做完整的记忆系统
+  - `short-term-feedback` 更适合挂在 turn 级反馈收集与状态更新脚本上，`long-term-memory-index` 更适合挂在启动/提取/停止三个阶段脚本上
+- 假设:
+  - hooks 输出到 `systemMessage` 的内容应该足够短，只负责提醒与触发，不应塞入完整记忆正文
+  - 记忆读写最终仍由 `agents` CLI 处理，hooks 只负责决定何时触发
+- 决策:
+  - 以 hooks 作为会话边界触发器，以脚本作为记忆操作执行器
+  - 先设计最小的 4 个脚本角色：启动预热、输入前检索、停止回写、工具前后证据整理
+  - 后续实现优先保持脚本薄、逻辑集中、可审计
+- 未解问题:
+  - `SessionStart` 是否需要区分 startup 与 resume 两种路径
+  - `Stop` 是否同时承担 long-term 和记忆摘要的最终 flush
+  - `PreToolUse` / `PostToolUse` 是否只用于 Bash，还是未来需要预留扩展位
+- 下一步:
+  - 基于这组边界，直接写出 hooks 方案和脚本清单的设计稿
+
+## R-0060 定稿 Codex hooks 的设计文档与实施计划
+
+- 日期: 2026-04-03
+- 目标: 将 hooks 触发面、脚本职责和实现顺序固定为可执行文档
+- 发现:
+  - 设计文档已写入 `docs/portable-agent-contract/dynamic-memory/codex-hooks-memory-registration.md`
+  - 实施计划已写入 `docs/plans/2026-04-03-codex-hooks-memory-registration.md`
+  - 方案收敛为机器级 `~/.codex/hooks.json` 注册 + repo 管理的薄脚本 + 共享 `agents` CLI 写回
+- 决策:
+  - 先实现 `SessionStart`、`UserPromptSubmit`、`Stop`
+  - 再实现 `PostToolUse`
+  - `PreToolUse` 只保留 Bash 级护栏
+  - 记忆读写继续复用现有 `agents` 命令，不新增直接写盘主路径
+
+## R-0061 落地 Codex hooks 运行时与本机注册
+
+- 日期: 2026-04-03
+- 目标: 实现机器级 hooks 注册、共享 driver、事件适配器和最小测试覆盖
+- 发现:
+  - 已新增 `.codex/hooks.json` 作为 hooks registry 模板
+  - 已新增 `scripts/codex-hooks/` 下的 `contracts.ts`、`state.ts`、`driver.ts` 和五个事件适配器
+  - 已新增 `scripts/codex-hooks/install-hooks.sh`，并把 registry 安装到 `/Users/screamcart-agent0/.codex/hooks.json`
+  - 通过 `scripts/codex-hooks/test/*.test.ts` 验证了 registry 结构、SessionStart / UserPromptSubmit / Stop 的 memory flow、PreToolUse 阻断、PostToolUse evidence capture，以及重复事件去重
+- 决策:
+  - 记忆写回仍通过现有 `agents` CLI
+  - 事件适配器保持薄层，去重和状态回填集中在共享 driver
+  - 机器级 registry 与 repo-local template 可同时存在，但 side effect 必须由事件键去重保证幂等
+
+## R-0062 真实 Codex session smoke 在 Stop 阶段失败并开始采集 hook 输入证据
+
+- 日期: 2026-04-03
+- 目标: 定位跨 session smoke 中 `Stop` hook Failed 的真实原因
+- 输入:
+  - 真实 `codex exec` smoke 结果
+  - 现有 hook driver / state / registry 代码
+- 动作:
+  - 复核 `Stop` 的 flush 路径和状态持久化路径
+  - 排查是否为 `agents run` 失败、hook 返回协议不兼容，或 stdin payload 结构与本地假设不一致
+  - 为 hook runtime 增加可选 debug 落盘，准备抓取真实 stdin / stdout
+- 发现:
+  - 真实 smoke 中 `SessionStart` 与 `UserPromptSubmit` 显示 Completed，但 `Stop` 显示 Failed
+  - 目前没有看到可直接证明 `Stop` 失败点的原始 hook payload 和 stderr
+  - `Stop` 失败很可能发生在 flush 相关路径，但也可能是 Codex hook 协议与本地假设不一致
+- 假设:
+  - 真实 Codex session 的 hook payload 字段或返回约束，与当前 driver 的本地测试假设存在偏差
+  - 需要先采集原始 stdin/stdout，再决定是否收敛 `Stop` 返回值或调整 flush 条件
+- 决策:
+  - 先加 debug 证据采集，不直接扩大实现范围
+  - 在拿到真实 payload 之前，不把 `Stop Failed` 归因到单一代码分支
+- 未解问题:
+  - Codex hooks 在真实 session 中的 stdin JSON schema 是否与本地 `HookInput` 定义一致
+  - `Stop` 是否允许 `hookSpecificOutput`，或者只能返回更小的响应
+  - `agents run` 在 flush 阶段是否真的成功执行
+- 下一步:
+  - 用 debug 环境重新跑一轮真实 `codex exec`
+  - 读取 `/tmp` 中的 raw stdin / response / stderr 日志
+  - 基于证据修正 `Stop` 的实现或返回形状
+
+## R-0063 修正 Stop 为纯 side effect 后，跨 session smoke 成功
+
+- 日期: 2026-04-03
+- 目标: 让真实 Codex session 的 `Stop` hook 从 Failed 变成 Completed，并完成跨 session smoke
+- 输入:
+  - R-0062 采集到的真实 stdin / stdout 日志
+  - 真实 `codex exec` smoke 复跑结果
+- 动作:
+  - 基于真实 payload 发现 `Stop` 输入包含 `stop_hook_active: false`
+  - 将 `Stop` 从“flush + 回传额外上下文”改为“flush 但只返回 `continue: true`”
+  - 重新运行真实 `codex exec`，并在 debug 目录核对 hook 日志与 state
+- 发现:
+  - `SessionStart` / `UserPromptSubmit` 在真实 session 中均为 Completed
+  - 修改前 `Stop` 在真实 session 中会 Failed
+  - 修改后 `Stop` 在真实 session 中变为 Completed
+  - 跨 session smoke 成功时，shared root 内新增了 long-term object，内容来自 `Stop` flush 的 `[hook flush] ... assistant=hook-smoke-ok`
+  - hooks state 也成功落在 `OBSIDIAN_AGENT_MEMORY_SERVER_HOOKS_STATE_ROOT` 指定目录下
+- 假设:
+  - 真实 Codex hooks 对 `Stop` 的返回约束比 `SessionStart` / `UserPromptSubmit` 更严格，至少不希望 `Stop` 再回传额外的 `hookSpecificOutput`
+- 决策:
+  - `Stop` 保持纯 side effect，避免向 Codex 返回额外上下文
+  - 记忆回写仍保留在 `Stop`，但成功与否不再依赖 `Stop` 的附加输出
+- 未解问题:
+  - `stop_hook_active: false` 是否意味着未来还需要显式区分 stop hook 激活态与普通 stop 事件
+  - 是否要为 `Stop` 的 flush 失败增加更明确的持久化告警字段
+- 下一步:
+  - 将本次 smoke 结果回写到设计文档对应段落，确保后续实现不再依赖 `Stop` 附加上下文
+
+## R-0064 收敛仓库专用开发测试 identity 为 `agentic-memory-expert`
+
+- 日期: 2026-04-03
+- 目标: 为本仓库的开发与测试引入一个默认 identity，并确保它不会对其他仓库的 Codex session 暴露
+- 输入:
+  - 用户要求：创建一个仓库专用的开发测试 identity，负责 agentic-memory 框架开发和经验积累
+  - 用户约束：只要是本仓库的开发需求都可以用，但不要暴露给其他仓库的 Codex session
+  - 当前 `agents` 共享根与 Codex hooks 运行时
+- 动作:
+  - 收敛命名从“sandbox test agent”改为 `agentic-memory-expert`
+  - 采用 `agent_identity + repo-local scope sidecar` 的方式做可见性隔离
+  - 将本仓库默认绑定指向该 identity，并保留其他既有 identity 作为可选项
+- 发现:
+  - 单靠 identity 名称不能阻止跨仓库暴露，必须有运行时 scope 校验
+  - 对其他仓库隐藏 `agentic-memory-expert` 的关键不是“改名”，而是把它标记为 repo-local 并让 CLI / launcher 读取 workspace root
+- 假设:
+  - 当前仓库作为 canonical workspace root，足以满足本需求的隔离边界
+- 决策:
+  - 本仓库默认开发 / 测试 identity 使用 `agentic-memory-expert`
+  - 仅在本仓库 workspace root 下可见和可调用
+  - 其他仓库 session 即使接触到共享 launcher，也应被 scope 规则拒绝或过滤
+- 未解问题:
+  - `agentic-memory-expert` 的 scope sidecar 是否应采用单一 workspace root，还是为未来分支工作区预留多 root 结构
+  - 是否需要进一步把默认绑定从 `.codex/agent-memory` 提升到更显式的仓库级配置文件
+- 下一步:
+  - 实现 repo-local scope sidecar、CLI 过滤和 launcher workspace root 透传
+  - 将本仓库的默认 binding 切换为 `agentic-memory-expert`
+
+## R-0065 `agentic-memory-expert` 落地并通过 repo-local 可见性烟雾测试
+
+- 日期: 2026-04-03
+- 目标: 完成本仓库默认开发 / 测试 identity 的实际落地，并验证它在其他仓库 session 中不可见
+- 输入:
+  - 新增的 `agents/agentic-memory-expert/` identity 资产
+  - repo-local scope sidecar
+  - 更新后的 launcher 和 CLI scope 过滤
+  - 更新后的 repo 默认 binding
+- 动作:
+  - 创建 `agentic-memory-expert` identity、scope 和最小记忆骨架
+  - 将 launcher 改为透传 caller workspace root
+  - 将 CLI 的 `list / run / verify` 改为基于 workspace root 的 scope 校验
+  - 将本仓库默认 binding 切到 `agentic-memory-expert`
+  - 运行 CLI 与 hooks 测试
+  - 真实执行 `agents list` / `agents run` / `agents verify`
+- 发现:
+  - 本仓库 `agents list` 能看到 `agentic-memory-expert`
+  - 其他 workspace root 下的 `agents list` 不会返回它
+  - 其他 workspace root 下对 `agentic-memory-expert` 的 `run / verify` 会被 scope 拒绝
+  - `agentic-memory-expert` 已生成第一条 long-term object，`agents verify --agent-id agentic-memory-expert` 通过
+  - CLI 测试与 Codex hooks 测试都通过
+- 假设:
+  - 现有 repo-local scope 规则已经足够满足“本仓库可用、其他仓库不可见”的当前需求
+- 决策:
+  - 本仓库的默认开发 / 测试 identity 固定为 `agentic-memory-expert`
+  - 该 identity 仅对当前仓库 workspace root 开放
+  - 保留 `research-agent` 和 `unity-optimization-agent` 作为共享可见 identity
+- 未解问题:
+  - 是否需要为分支工作区预留多 workspace root scope 结构
+  - 是否需要把 repo-local scope 进一步抽象成统一的 `agent_scope` 契约
+- 下一步:
+  - 若未来需要多工作区复用，再讨论 scope 的多 root 扩展
+
+## R-0066 真实 Codex session 在默认 binding 下使用 `agentic-memory-expert`
+
+- 日期: 2026-04-03
+- 目标: 验证本仓库根目录下的真实 Codex session 是否会默认进入 `agentic-memory-expert`
+- 输入:
+  - 当前仓库根目录
+  - 更新后的 repo-local binding
+  - 更新后的 hooks runtime
+- 动作:
+  - 在本仓库根目录运行真实 `codex exec`
+  - 观察 hooks 日志和最终输出
+- 发现:
+  - 真实 session 成功输出 `agentic-memory-expert-smoke-ok`
+  - hooks 日志中出现双份 event 记录，说明全局与 repo-local registry 同时被加载
+  - 由于 driver 的 event 去重和 state flush，实际记忆写入没有出现重复污染
+- 假设:
+  - 目前的双 registry 加载是 Codex hooks 的既有行为，而不是本项目的 scope 逻辑失效
+- 决策:
+  - 保留当前双 registry 结构，只依赖 driver 去重保障幂等
+  - 如果后续噪音太高，再考虑把 repo-local template 和 active registry 进一步拆分
+- 未解问题:
+  - 是否要进一步减少 repo-local template 与 user-global active registry 的重复加载噪音
+  - 是否需要在 docs 中明确说明双 registry 依赖去重是可接受的临时状态
+- 下一步:
+  - 暂无，除非后续需要降低 hooks 噪音
+
+## R-0067 将当前 session 挂载到 `agentic-memory-expert`
+
+- 日期: 2026-04-03
+- 目标: 让当前 Codex session 直接以 `agentic-memory-expert` 作为开发上下文的默认 identity
+- 输入:
+  - 用户要求：现在开始在当前 session 挂载 `agentic-memory-expert`
+  - 当前仓库的 repo-local binding
+  - 当前 hooks 运行时状态
+- 动作:
+  - 确认仓库级 binding 已指向 `agentic-memory-expert`
+  - 检查 hooks state root 是否已有旧 session state 需要迁移
+  - 发现当前可见 hooks state root 下没有现成的旧 state 可迁移
+- 发现:
+  - 当前仓库 binding 已能让后续 hook 事件解析到 `agentic-memory-expert`
+  - 没有发现需要回填的旧 session state，因此无需做额外迁移
+- 假设:
+  - 当前 session 的后续 turn 会按 repo-local binding 自动进入 `agentic-memory-expert`
+- 决策:
+  - 将当前 session 视为已挂载到 `agentic-memory-expert`
+  - 后续开发、测试和记忆写入默认使用该 identity
+- 未解问题:
+  - 是否需要在未来为“当前 session 已挂载”的状态建立显式标记文件
+- 下一步:
+  - 继续以 `agentic-memory-expert` 作为当前仓库开发身份

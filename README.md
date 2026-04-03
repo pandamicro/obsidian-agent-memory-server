@@ -23,6 +23,21 @@
 - 子文档目录：`docs/portable-agent-contract/`
 - Agent 研究约束：`AGENTS.md`
 
+## 本机入口
+
+仓库提供一个可放入 `PATH` 的 `agents` launcher，它会把命令转发到当前仓库的 `projects/cli`，并默认把当前仓库作为这台机器上的共享 `agent_identity` 与共享记忆根。
+
+默认安装后可以在任意项目里直接调用：
+
+```bash
+agents list
+agents init --agent-id research-agent
+agents run --agent-id research-agent --input "summarize current contract research"
+agents verify --agent-id research-agent
+```
+
+如果需要临时切换共享根，可以设置 `OBSIDIAN_AGENT_MEMORY_SERVER_SHARED_ROOT`。
+
 ## 里程碑（草案）
 
 - M0：项目初始化与文档基线

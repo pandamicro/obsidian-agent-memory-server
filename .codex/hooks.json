@@ -1,0 +1,62 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node --experimental-strip-types \"/Users/screamcart-agent0/obsidian-agent-memory-server/scripts/codex-hooks/session-start.ts\"",
+            "statusMessage": "Loading agent memory"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node --experimental-strip-types \"/Users/screamcart-agent0/obsidian-agent-memory-server/scripts/codex-hooks/user-prompt-submit.ts\"",
+            "statusMessage": "Refreshing agent memory"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node --experimental-strip-types \"/Users/screamcart-agent0/obsidian-agent-memory-server/scripts/codex-hooks/stop.ts\"",
+            "statusMessage": "Flushing agent memory"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node --experimental-strip-types \"/Users/screamcart-agent0/obsidian-agent-memory-server/scripts/codex-hooks/pre-tool-use.ts\"",
+            "statusMessage": "Checking Bash command"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node --experimental-strip-types \"/Users/screamcart-agent0/obsidian-agent-memory-server/scripts/codex-hooks/post-tool-use.ts\"",
+            "statusMessage": "Recording Bash result"
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -1,0 +1,18 @@
+#!/bin/sh
+set -eu
+
+REPO_ROOT="/Users/screamcart-agent0/obsidian-agent-memory-server"
+SHARED_ROOT="${OBSIDIAN_AGENT_MEMORY_SERVER_SHARED_ROOT:-${OBSIDIAN_AGENT_MEMORY_SERVER_ROOT:-$REPO_ROOT}}"
+WORKSPACE_ROOT="${OBSIDIAN_AGENT_MEMORY_SERVER_WORKSPACE_ROOT:-$(pwd -P)}"
+CLI_PATH="$REPO_ROOT/projects/cli/src/cli.ts"
+
+if [ ! -f "$CLI_PATH" ]; then
+  echo "agents: missing CLI at $CLI_PATH" >&2
+  exit 1
+fi
+
+export OBSIDIAN_AGENT_MEMORY_SERVER_SHARED_ROOT="$SHARED_ROOT"
+export OBSIDIAN_AGENT_MEMORY_SERVER_ROOT="$SHARED_ROOT"
+export OBSIDIAN_AGENT_MEMORY_SERVER_WORKSPACE_ROOT="$WORKSPACE_ROOT"
+
+exec node --experimental-strip-types "$CLI_PATH" "$@"
