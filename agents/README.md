@@ -11,4 +11,22 @@
 - 长期记忆放在 `memory/long-term/`
 - 运行摘要放在 `runs/`
 
+运行期清理：
+
+- 运行期生成的未跟踪记忆文件可先用 `scripts/cleanup-runtime-artifacts.sh` 做 dry-run
+- 确认后再用 `scripts/cleanup-runtime-artifacts.sh --apply` 清理未跟踪运行产物
+- 该脚本只处理 `agents/*/memory/{short-term,long-term}` 与 `agents/*/runs` 下的未跟踪文件，不会删除已跟踪的 seed 数据
+
 当前仓库默认开发 / 测试 identity 是 `agentic-memory-expert`，它只在本仓库 workspace root 下可见。
+
+运行期若产生了未跟踪的短期记忆、长期记忆或 run 摘要噪音，可先 dry-run：
+
+```bash
+scripts/cleanup-runtime-artifacts.sh
+```
+
+确认后再执行：
+
+```bash
+scripts/cleanup-runtime-artifacts.sh --apply
+```

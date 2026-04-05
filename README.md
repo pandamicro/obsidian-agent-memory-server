@@ -38,6 +38,14 @@ agents verify --agent-id research-agent
 
 如果需要临时切换共享根，可以设置 `OBSIDIAN_AGENT_MEMORY_SERVER_SHARED_ROOT`。
 
+如果需要清理运行期产生的未跟踪记忆产物，可先 dry-run：
+
+```bash
+scripts/cleanup-runtime-artifacts.sh
+```
+
+确认后再执行 `scripts/cleanup-runtime-artifacts.sh --apply`。
+
 ## 里程碑（草案）
 
 - M0：项目初始化与文档基线

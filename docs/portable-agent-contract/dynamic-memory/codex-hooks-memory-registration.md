@@ -98,9 +98,18 @@ active `agent_id` 必须由会话 bootstrap 提前绑定，然后由 hooks 读�
 
 1. 显式环境变量
 2. repo-local session binding 文件
-3. bootstrap 注入的默认值
+3. 显式 mount 流程写入的 workspace binding
 
-如果没有绑定到有效 `agent_id`，hooks 必须 fail-open 并只记录 warning。
+MVP 补充约束：
+
+- `SessionStart` 必须在未绑定 session 中主动注入 identity 选择协议
+- 选择协议必须明确包含 `No identity (Not applicable Agent Identity / 不适用 Agent Identity)`
+- 用户可在 session 内通过 `数字`、`agent_id` 或 `no identity` 完成选择
+- 用户可在一条消息内发送 `选择 + 任务`
+- `UserPromptSubmit` 负责解析选择，并由 hooks 调用 `agents` CLI 完成验证与初始化
+- hooks runtime 不再根据“只剩一个可见 identity”自动绑定
+
+如果没有绑定到有效 `agent_id`，hooks 必须先要求选择，不擅自选择任何 identity。
 
 ## Hook matrix
 
@@ -120,9 +129,11 @@ active `agent_id` 必须由会话 bootstrap 提前绑定，然后由 hooks 读�
 
 - 读取 active `agent_id`
 - 读取 session state
-- 调用 `agents verify --agent-id <id>` 做长期记忆提取
+- 若未绑定，则列出可见 identities 并注入选择协议
+- 若已绑定，则调用 `agents verify --agent-id <id>` 做长期记忆提取
 - 生成短的 `additionalContext`
 - 写回 session state 的 `last_session_start` / `last_retrieval`
+- 提示当前 `Mounted identity`
 
 输出：
 
@@ -144,9 +155,12 @@ active `agent_id` 必须由会话 bootstrap 提前绑定，然后由 hooks 读�
 职责：
 
 - 读取 prompt 和 session state
+- 若 session 未绑定，优先解析 `数字 / agent_id / no identity / 选择+任务`
+- 选择成功后，调用 `agents verify --agent-id <id>` 完成初始化
 - 判断是否触发 `agents verify`
 - 从长期记忆索引生成短提示
 - 更新短期反馈队列
+- 提示当前 `Mounted identity`
 
 输出：
 
@@ -194,6 +208,7 @@ active `agent_id` 必须由会话 bootstrap 提前绑定，然后由 hooks 读�
 - 记录 `tool_input.command`
 - 做最小风险判断
 - 必要时阻断明显危险的 Bash 命令
+- 若输出提示，必须带上当前 `Mounted identity`
 
 输出：
 
@@ -217,6 +232,7 @@ active `agent_id` 必须由会话 bootstrap 提前绑定，然后由 hooks 读�
 - 提取 `evidence_refs`
 - 更新 short-term feedback sidecar
 - 生成是否需要长期晋升的候选标记
+- 输出极短 identity 提示
 
 输出：
 
@@ -275,9 +291,10 @@ hooks 侧需要一个独立的 session state，不要和长期记忆文件混在
 ### 输入前
 
 1. Codex 触发 `UserPromptSubmit`
-2. `user_prompt_submit.py` 检查 prompt 是否满足检索条件
-3. 必要时再次调用 `agents verify`
-4. 输出短提示，避免上下文漂移
+2. 若 session 未绑定，先把 prompt 解析为 identity 选择协议
+3. 若用户完成选择，则调用 `agents verify` 初始化所选 identity
+4. 若 prompt 中还包含剩余任务，则把剩余任务作为真实任务继续处理
+5. 对已绑定 session，再按原规则判断是否需要刷新记忆
 
 ### 工具调用前后
 

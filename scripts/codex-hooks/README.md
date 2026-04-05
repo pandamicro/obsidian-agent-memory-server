@@ -8,6 +8,21 @@ Installation:
 scripts/codex-hooks/install-hooks.sh
 ```
 
+Primary flow:
+
+- Install the machine-level registry with `scripts/codex-hooks/install-hooks.sh`
+- Let `SessionStart` ask for identity selection inside the Codex session
+- Let the user reply with `数字` / `agent_id` / `no identity`
+- Let `UserPromptSubmit` complete initialization inside the session
+
+Compatibility flow:
+
+```bash
+agents mount
+```
+
+`agents mount` remains available as a compatibility/debug command. It can still pre-write a workspace binding and install `<workspace>/.codex/hooks.json`, but it is no longer the recommended main interaction path.
+
 Active agent binding:
 
 - `OBSIDIAN_AGENT_MEMORY_SERVER_ACTIVE_AGENT_ID`

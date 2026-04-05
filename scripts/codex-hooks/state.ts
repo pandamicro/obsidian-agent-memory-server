@@ -23,6 +23,7 @@ export type SessionState = {
   workspace_root: string;
   workspace_key: string;
   agent_id?: string;
+  identity_selection_declined?: boolean;
   last_session_start?: string;
   last_retrieval_turn?: string;
   last_inject_turn?: string;
@@ -187,6 +188,12 @@ export function updateLastFlush(state: SessionState): void {
 
 export function markAgentId(state: SessionState, agentId: string): void {
   state.agent_id = agentId;
+  state.identity_selection_declined = false;
+}
+
+export function markIdentitySelectionDeclined(state: SessionState): void {
+  delete state.agent_id;
+  state.identity_selection_declined = true;
 }
 
 export function readWorkspaceBinding(workspaceRoot: string, stateRoot: string): string | null {
@@ -227,4 +234,3 @@ export function hasAgentBinding(workspaceRoot: string, stateRoot: string): boole
 export function normalizeEventName(input: HookInput, fallback: HookEventName): HookEventName {
   return input.hook_event_name ?? fallback;
 }
-

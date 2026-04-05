@@ -1,7 +1,9 @@
-import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { realpathSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { join, resolve } from 'node:path';
+import { createInterface } from 'node:readline/promises';
+import { fileURLToPath } from 'node:url';
 
 type AgentIdentity = {
   agent_id: string;
@@ -22,6 +24,9 @@ type AgentScope = {
   scope_type?: 'repo-local';
   workspace_root?: string;
 };
+
+const sourceRepoRoot = resolve(fileURLToPath(new URL('../../..', import.meta.url)));
+const sourceHooksPath = resolve(fileURLToPath(new URL('../../../.codex/hooks.json', import.meta.url)));
 
 function resolveStorageRoot() {
   return (
@@ -248,6 +253,96 @@ async function writeJsonFile(path: string, value: unknown) {
   await writeFile(path, `${JSON.stringify(value, null, 2)}\n`, 'utf8');
 }
 
+function getWorkspaceCodexDir(workspaceRoot: string) {
+  return join(workspaceRoot, '.codex');
+}
+
+function getWorkspaceHooksPath(workspaceRoot: string) {
+  return join(getWorkspaceCodexDir(workspaceRoot), 'hooks.json');
+}
+
+function getWorkspaceBindingDir(workspaceRoot: string) {
+  return join(getWorkspaceCodexDir(workspaceRoot), 'agent-memory');
+}
+
+function getWorkspaceBindingJsonPath(workspaceRoot: string) {
+  return join(getWorkspaceBindingDir(workspaceRoot), 'active-agent.json');
+}
+
+function getWorkspaceBindingTextPath(workspaceRoot: string) {
+  return join(getWorkspaceBindingDir(workspaceRoot), 'active-agent-id.txt');
+}
+
+async function removeIfExists(path: string) {
+  try {
+    await rm(path);
+  } catch (error) {
+    const typed = error as NodeJS.ErrnoException;
+    if (typed.code !== 'ENOENT') {
+      throw error;
+    }
+  }
+}
+
+async function writeWorkspaceBinding(workspaceRoot: string, agentId: string) {
+  const bindingDir = getWorkspaceBindingDir(workspaceRoot);
+  await mkdir(bindingDir, { recursive: true });
+  await writeJsonFile(getWorkspaceBindingJsonPath(workspaceRoot), { agent_id: agentId });
+  await writeFile(getWorkspaceBindingTextPath(workspaceRoot), `${agentId}\n`, 'utf8');
+}
+
+function shouldManageWorkspaceHooks(workspaceRoot: string) {
+  return canonicalizePath(workspaceRoot) !== canonicalizePath(sourceRepoRoot);
+}
+
+async function installWorkspaceHooks(workspaceRoot: string) {
+  if (!shouldManageWorkspaceHooks(workspaceRoot)) {
+    return;
+  }
+
+  await mkdir(getWorkspaceCodexDir(workspaceRoot), { recursive: true });
+  await copyFile(sourceHooksPath, getWorkspaceHooksPath(workspaceRoot));
+}
+
+async function clearWorkspaceMount(workspaceRoot: string) {
+  await removeIfExists(getWorkspaceBindingJsonPath(workspaceRoot));
+  await removeIfExists(getWorkspaceBindingTextPath(workspaceRoot));
+
+  if (shouldManageWorkspaceHooks(workspaceRoot)) {
+    await removeIfExists(getWorkspaceHooksPath(workspaceRoot));
+  }
+}
+
+async function promptMountSelection(workspaceRoot: string, agents: AgentSummary[]) {
+  if (agents.length === 0) {
+    return 0;
+  }
+
+  console.log(`Select an agent identity to mount hooks for ${workspaceRoot}:`);
+  console.log('0) Do not mount hooks');
+  for (const [index, agent] of agents.entries()) {
+    console.log(`${index + 1}) ${agent.agent_id} (${agent.canonical_name})`);
+  }
+
+  const readline = createInterface({
+    input: process.stdin,
+    output: process.stdout,
+  });
+
+  try {
+    const answer = (await readline.question('Selection: ')).trim();
+    const parsed = Number.parseInt(answer, 10);
+
+    if (!Number.isInteger(parsed) || parsed < 0 || parsed > agents.length) {
+      throw new Error(`Invalid selection: ${answer || '<empty>'}`);
+    }
+
+    return parsed;
+  } finally {
+    readline.close();
+  }
+}
+
 async function handleRun(agentId: string, input: string, rootDir: string) {
   const agentRoot = join(rootDir, 'agents', agentId);
   const shortTermDir = join(agentRoot, 'memory', 'short-term');
@@ -349,6 +444,32 @@ async function handleList(rootDir: string, workspaceRoot: string) {
   console.log(JSON.stringify(agents, null, 2));
 }
 
+async function handleMount(rootDir: string, workspaceRoot: string) {
+  const agents = await listAgents(rootDir, workspaceRoot);
+  const selection = await promptMountSelection(workspaceRoot, agents);
+
+  if (selection === 0) {
+    await clearWorkspaceMount(workspaceRoot);
+    if (agents.length === 0) {
+      console.log(`No visible agent identities for ${workspaceRoot}. Hooks not mounted for this workspace.`);
+      return;
+    }
+    console.log(`Hooks not mounted for this workspace: ${workspaceRoot}`);
+    return;
+  }
+
+  const selectedAgent = agents[selection - 1];
+  if (!selectedAgent) {
+    throw new Error(`Selection out of range: ${selection}`);
+  }
+
+  await assertAgentVisible(selectedAgent.agent_id, rootDir, workspaceRoot);
+  await installWorkspaceHooks(workspaceRoot);
+  await writeWorkspaceBinding(workspaceRoot, selectedAgent.agent_id);
+
+  console.log(`Mounted hooks for ${selectedAgent.agent_id} in ${workspaceRoot}`);
+}
+
 async function main() {
   const { command, options } = parseArgs(process.argv.slice(2));
   const rootDir = resolveStorageRoot();
@@ -388,6 +509,11 @@ async function main() {
 
   if (command === 'list') {
     await handleList(rootDir, workspaceRoot);
+    return;
+  }
+
+  if (command === 'mount') {
+    await handleMount(rootDir, workspaceRoot);
     return;
   }
 

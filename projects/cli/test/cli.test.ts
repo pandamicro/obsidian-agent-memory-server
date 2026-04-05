@@ -10,7 +10,7 @@ const cliPath = resolve(fileURLToPath(new URL('../src/cli.ts', import.meta.url))
 const launcherPath = resolve(fileURLToPath(new URL('../../../bin/agents', import.meta.url)));
 const repoBindingPath = resolve(fileURLToPath(new URL('../../../.codex/agent-memory/active-agent.json', import.meta.url)));
 
-async function runCli(args: string[], cwd: string) {
+async function runCli(args: string[], cwd: string, stdinText?: string) {
   return new Promise<{ code: number | null; stdout: string; stderr: string }>((resolvePromise) => {
     const child = spawn(process.execPath, ['--experimental-strip-types', cliPath, ...args], {
       cwd,
@@ -28,6 +28,10 @@ async function runCli(args: string[], cwd: string) {
       stderr += String(chunk);
     });
 
+    if (stdinText !== undefined) {
+      child.stdin?.end(stdinText);
+    }
+
     child.on('close', (code) => {
       resolvePromise({ code, stdout, stderr });
     });
@@ -38,12 +42,13 @@ async function runLauncher(
   args: string[],
   cwd: string,
   env: NodeJS.ProcessEnv = {},
+  stdinText?: string,
 ) {
   return new Promise<{ code: number | null; stdout: string; stderr: string }>((resolvePromise) => {
     const child = spawn(launcherPath, args, {
       cwd,
       env: { ...process.env, ...env },
-      stdio: ['ignore', 'pipe', 'pipe'],
+      stdio: ['pipe', 'pipe', 'pipe'],
     });
 
     let stdout = '';
@@ -56,6 +61,8 @@ async function runLauncher(
     child.stderr.on('data', (chunk) => {
       stderr += String(chunk);
     });
+
+    child.stdin.end(stdinText ?? '');
 
     child.on('close', (code) => {
       resolvePromise({ code, stdout, stderr });
@@ -288,4 +295,91 @@ test('repo-local scoped agents are visible only from their canonical workspace',
 test('repository default binding points to agentic-memory-expert', async () => {
   const binding = JSON.parse(await readFile(repoBindingPath, 'utf8')) as { agent_id?: string };
   assert.equal(binding.agent_id, 'agentic-memory-expert');
+});
+
+test('mount requires an explicit selection and installs workspace hooks for the chosen agent', async () => {
+  const workspaceRoot = await mkdtemp(join(tmpdir(), 'agent-mount-workspace-'));
+  const sharedRoot = await mkdtemp(join(tmpdir(), 'agent-mount-shared-'));
+
+  assert.equal(
+    (
+      await runLauncher(['init', '--agent-id', 'research-agent'], workspaceRoot, {
+        OBSIDIAN_AGENT_MEMORY_SERVER_SHARED_ROOT: sharedRoot,
+      })
+    ).code,
+    0,
+  );
+  assert.equal(
+    (
+      await runLauncher(['init', '--agent-id', 'unity-optimization-agent'], workspaceRoot, {
+        OBSIDIAN_AGENT_MEMORY_SERVER_SHARED_ROOT: sharedRoot,
+      })
+    ).code,
+    0,
+  );
+
+  const mountResult = await runLauncher(
+    ['mount'],
+    workspaceRoot,
+    {
+      OBSIDIAN_AGENT_MEMORY_SERVER_SHARED_ROOT: sharedRoot,
+    },
+    '2\n',
+  );
+
+  assert.equal(mountResult.code, 0);
+  assert.match(mountResult.stdout, /Select an agent identity/);
+  assert.match(mountResult.stdout, /0\) Do not mount hooks/);
+  assert.match(mountResult.stdout, /Mounted hooks for unity-optimization-agent/);
+
+  const bindingPath = join(workspaceRoot, '.codex', 'agent-memory', 'active-agent.json');
+  const binding = JSON.parse(await readFile(bindingPath, 'utf8')) as { agent_id?: string };
+  assert.equal(binding.agent_id, 'unity-optimization-agent');
+
+  const hooksPath = join(workspaceRoot, '.codex', 'hooks.json');
+  const hooks = JSON.parse(await readFile(hooksPath, 'utf8')) as { hooks?: Record<string, unknown> };
+  assert.ok(hooks.hooks?.SessionStart);
+});
+
+test('mount no-mount option removes workspace hook registration and binding', async () => {
+  const workspaceRoot = await mkdtemp(join(tmpdir(), 'agent-mount-none-workspace-'));
+  const sharedRoot = await mkdtemp(join(tmpdir(), 'agent-mount-none-shared-'));
+
+  assert.equal(
+    (
+      await runLauncher(['init', '--agent-id', 'research-agent'], workspaceRoot, {
+        OBSIDIAN_AGENT_MEMORY_SERVER_SHARED_ROOT: sharedRoot,
+      })
+    ).code,
+    0,
+  );
+
+  assert.equal(
+    (
+      await runLauncher(
+        ['mount'],
+        workspaceRoot,
+        {
+          OBSIDIAN_AGENT_MEMORY_SERVER_SHARED_ROOT: sharedRoot,
+        },
+        '1\n',
+      )
+    ).code,
+    0,
+  );
+
+  const noMountResult = await runLauncher(
+    ['mount'],
+    workspaceRoot,
+    {
+      OBSIDIAN_AGENT_MEMORY_SERVER_SHARED_ROOT: sharedRoot,
+    },
+    '0\n',
+  );
+
+  assert.equal(noMountResult.code, 0);
+  assert.match(noMountResult.stdout, /Hooks not mounted for this workspace/);
+
+  await assert.rejects(readFile(join(workspaceRoot, '.codex', 'hooks.json'), 'utf8'));
+  await assert.rejects(readFile(join(workspaceRoot, '.codex', 'agent-memory', 'active-agent.json'), 'utf8'));
 });

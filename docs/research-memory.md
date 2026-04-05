@@ -2241,3 +2241,193 @@
   - 是否需要在未来为“当前 session 已挂载”的状态建立显式标记文件
 - 下一步:
   - 继续以 `agentic-memory-expert` 作为当前仓库开发身份
+
+## R-0068 收敛外部 Codex session 的 identity 选择与持续提示边界
+
+- 日期: 2026-04-04
+- 目标: 回答在外部 session 挂载时，是否应让用户选择 `agent_identity`，以及 hooks 是否应持续提示当前 identity
+- 输入:
+  - 用户要求：在外部 session 挂载时，需要让用户选择使用哪个 agent identity，并在 hook 中时刻提示 identity
+  - 现有设计文档：`docs/portable-agent-contract/dynamic-memory/codex-hooks-memory-registration.md`
+  - 当前 hooks / binding 研究结论
+- 动作:
+  - 复核现有 hooks 设计文档中 `Identity binding` 段落与 hook matrix
+  - 对比当前机制里“谁决定何时触发记忆动作”和“谁决定 session 属于哪个 identity”
+  - 收敛外部 session 下 identity 选择与持续提示应分别落在哪一层
+- 发现:
+  - 现有 hooks 设计已经明确：hooks 只负责“何时触发记忆动作”，不负责决定 session 属于哪个 `agent_identity`
+  - 当前 binding 来源优先级只覆盖显式环境变量、repo-local binding 文件和 bootstrap 默认值，还没有明确“多 identity 可见时如何让用户选择”的交互路径
+  - `SessionStart`、`UserPromptSubmit`、`Stop` 可以输出 `systemMessage` 或 `additionalContext`，足以承担“持续提醒当前 identity”的最小提示职责
+  - 如果把 identity 选择逻辑直接塞进 hook 事件处理器，会把“会话 bootstrap 选择”与“turn 级记忆注入”耦合到一起，增加状态分叉和失败路径
+  - 对外部 session 更稳的边界是：bootstrap 层完成可见 identity 枚举与用户选择，hooks 层只读取已绑定的 `agent_id` 并持续提示
+- 假设:
+  - “让用户选择”应优先理解为 session 启动期的显式选择，而不是每个 turn 都重新选择
+  - “时刻提示 identity”应理解为每个关键 hook 事件注入极短提示，而不是持续输出长文案
+- 决策:
+  - 倾向把 identity 选择放在 external session bootstrap / mount 流程，而不是主 hooks driver
+  - 倾向让 `SessionStart` 和 `UserPromptSubmit` 固定注入短 identity 提示；`Stop` 是否提示只保留最短收尾信息
+  - 在未完成 bootstrap 选择前，hooks 继续 fail-open，不擅自绑定到某个共享 identity
+- 未解问题:
+  - 外部 session 在发现多个可见 identities 时，是否必须强制用户显式选择，还是允许 fallback 到默认 identity
+  - identity 提示文案是否需要区分“repo-local identity”和“shared identity”
+  - 如果 session 中途切换 identity，是否允许热切换，还是要求新开 session
+- 下一步:
+  - 先和用户确认 external session 的选择策略
+  - 再把该策略写回设计文档，之后再进入实现
+
+## R-0069 落地外部 workspace 强制 mount 选择与 hooks identity 提示 MVP
+
+- 日期: 2026-04-04
+- 目标: 在 MVP 中实现“外部 session 强制选择 identity 或明确 no-mount”，并让 hooks 停止隐式选 identity
+- 输入:
+  - 用户确认：必须强制用户选择，并提供明确的“不挂载”选项；选择此项时不挂载任何 hook
+  - 当前 `projects/cli`、`scripts/codex-hooks` 实现
+- 动作:
+  - 先写失败测试，覆盖 `mount` 交互流程和 unbound workspace 的 hooks 惰性行为
+  - 在 CLI 中新增 `agents mount`，列出可见 identities 并要求显式选择
+  - 选择具体 identity 时，为当前 workspace 写入 binding 并安装 workspace-local `.codex/hooks.json`
+  - 选择 `Do not mount hooks` 时，移除该 workspace 的 hooks 与 binding
+  - 修改 hooks driver，去掉“单一可见 identity 自动绑定”的 fallback
+  - 将 hook 输出中的 identity 提示统一为 `Mounted identity`
+  - 更新设计文档与 README
+- 发现:
+  - 当前 driver 的确存在“若只剩一个可见 identity 就自动绑定”的隐式行为，这与用户的强制选择要求冲突
+  - 通过 workspace-local `agents mount`，可以把“是否挂载 hooks”收敛为当前 workspace 的显式状态，而不必把选择逻辑塞进每个 hook 事件
+  - 即便机器上仍存在全局 hooks registry，只要 driver 不再隐式选 identity，未绑定 workspace 也会保持 inert
+- 假设:
+  - 对于 MVP，“未绑定时 hooks inert”足以满足“不干扰记忆收集”的目标
+  - 如果未来要做到更严格的“物理上完全不执行任何 hooks”，还需要进一步处理 machine-global registry 的装配边界
+- 决策:
+  - 外部 workspace 的 identity 绑定通过 `agents mount` 完成
+  - hooks runtime 只接受显式 binding，不再做自动选择
+  - `SessionStart`、`UserPromptSubmit`、`PostToolUse`、`PreToolUse` 的输出提示统一显式带上当前 mounted identity
+- 验证:
+  - `node --test --experimental-strip-types scripts/codex-hooks/test/driver.test.ts scripts/codex-hooks/test/event-adapters.test.ts`
+  - `npm --prefix projects/cli test`
+- 未解问题:
+  - 当前 `agents mount` 仍是 terminal 交互；如果后续要给 skill 或 bootstrap 脚本调用，是否需要补一个显式 flag 模式
+  - machine-global registry 与 workspace-local registry 的长期分工是否还要继续收敛
+- 下一步:
+  - 如需继续推进，可把 `agents-bootstrap` skill 改成显式引导 `agents mount`
+
+## R-0070 纠偏为 Session 内部完成 identity 选择与初始化
+
+- 日期: 2026-04-04
+- 目标: 纠正“外部 workspace 先执行 `agents mount`”与用户真实需求之间的偏差
+- 输入:
+  - 用户澄清：所有操作都必须在 Codex session 内部完成，不能依赖人工执行命令行初始化
+  - 用户期望：`SessionStart` hook 主动提示用户选择一个 identity，由 Codex 在 session 内部接收选择并调用 CLI 完成初始化
+  - 当前 MVP：显式 `agents mount` + workspace binding + hooks inert fallback
+- 动作:
+  - 对照当前 MVP 与用户目标的差异
+  - 收紧“选择发生在 session 外”与“选择发生在 session 内”两种方案的边界
+- 发现:
+  - 当前 MVP 把 identity 选择放在 session 外部的命令行步骤，和用户要求冲突
+  - 用户真正要的是“SessionStart 触发一个会话内协议”，而不是“让人先在 shell 里准备好绑定文件”
+  - 这意味着 hooks 不只是读取 binding，还要在首次进入 session 时把“需要选择 identity”明确暴露给 Codex，再由 Codex 驱动 CLI 完成绑定
+  - 基于当前已知 hooks contract，`SessionStart` 可以注入提示文本；是否存在原生选项 UI 证据不足，因此当前更稳的理解是“文本协议式选择”，不是先假定有专门的 picker UI
+- 假设:
+  - session 内选择流程大概率应表现为：`SessionStart` 注入要求 -> 用户回复选项/identity 名称 -> Codex 调用 `agents` CLI 落盘绑定 -> 后续 turns 使用该 identity
+  - 若需要真正的可点击选项 UI，可能需要依赖 Codex 客户端额外能力；当前证据不足，不能先写死
+- 决策:
+  - 暂停把 `agents mount` 视为最终交互形态
+  - 后续设计应改成“SessionStart 注入选择协议 + session 内调用 CLI 完成绑定”
+- 未解问题:
+  - 用户选择应使用数字选项、identity 文本，还是两者都支持
+  - 未选择前，当前 session 的其他 hooks 是否完全静默，还是持续提醒未绑定
+  - 绑定完成后，是否需要在同一 session 立即二次注入 identity 上下文，还是等下一轮生效
+- 下一步:
+  - 先确认 session 内选择协议的最小交互形态
+
+## R-0071 落地 SessionStart 注入选择协议与 UserPromptSubmit 会话内初始化
+
+- 日期: 2026-04-04
+- 目标: 让未绑定的 Codex session 在 session 内部完成 identity 选择，而不是依赖 session 外命令
+- 输入:
+  - 用户确认：支持 `选择 + 任务`
+  - 用户补充：选项中必须明确包含“不适用 Agent Identity”
+  - 当前 hooks driver / tests
+- 动作:
+  - 先增加失败测试，覆盖 `SessionStart` 选择提示、`数字 / agent_id / no identity` 解析，以及 `选择 + 任务`
+  - 为 hooks session state 增加 `identity_selection_declined`
+  - 在 `SessionStart` 中对未绑定 session 注入固定选择协议
+  - 在 `UserPromptSubmit` 中优先解析选择协议，并调用 `agents verify --agent-id <id>` 完成所选 identity 初始化
+  - 对 `no identity` 增加 session 级静默态，后续 turns 不再反复要求选择
+  - 更新设计文档以反映“session 内选择”取代“session 外 mount”作为主路径
+- 发现:
+  - 仅靠 `SessionStart` 不能直接完成选择；真正的选择落点必须在下一次 `UserPromptSubmit`
+  - 在当前 hooks contract 下，最稳的交互形态是“文本协议”，而不是假定存在原生 picker UI
+  - 通过 `systemMessage + additionalContext` 可以让 Codex 在首轮先询问用户，再在用户回复时由 hooks 解析并初始化
+  - `选择 + 任务` 不需要修改原始 prompt，只需在 hook 注入中明确“前导选择 token 已被消费，剩余文本才是真正任务”
+- 假设:
+  - 当前 Codex hooks 的文本协议已经足够支持 MVP；如果未来需要更强 UX，再考虑专门的选项 UI 能力
+- 决策:
+  - 主路径改为：`SessionStart` 提示选择 -> `UserPromptSubmit` 解析选择 -> hooks 调 CLI 初始化 -> 后续按绑定 identity 正常工作
+  - 明确保留 `No identity (Not applicable Agent Identity / 不适用 Agent Identity)` 作为一等选项
+  - `no identity` 采用 session 级静默态，不写入长期绑定
+- 验证:
+  - `node --test --experimental-strip-types scripts/codex-hooks/test/*.test.ts`
+  - `npm --prefix projects/cli test`
+- 未解问题:
+  - 若外部 workspace 之前遗留了旧 binding 文件，是否仍应允许其跳过选择协议，还是未来完全改成 session-only 绑定
+  - 是否要把 `agents mount` 降级为调试/兼容命令，而不是主交互入口
+- 下一步:
+  - 若继续推进，可在真实外部 session 做一次 smoke，验证首轮询问与选择后初始化是否符合预期
+
+## R-0072 真实外部 Codex session 验证会话内 identity 选择协议
+
+- 日期: 2026-04-05
+- 目标: 在真实外部 Codex session 中验证 `SessionStart` 询问、`UserPromptSubmit` 选择解析和 `选择 + 任务` 初始化链路
+- 输入:
+  - 当前 hooks runtime
+  - 临时外部 workspace / 临时 shared root
+  - 真实 `codex exec`
+- 动作:
+  - 在临时 shared root 中初始化 `research-agent` 与 `unity-optimization-agent`
+  - 在未预绑 identity 的临时外部 workspace 中运行真实 `codex exec`
+  - 首条用户消息直接使用 `1 reply exactly session-choice-smoke-ok`
+  - 打开 `OBSIDIAN_AGENT_MEMORY_SERVER_HOOKS_DEBUG_DIR` 与独立 state root，抓取真实 hook stdin/stdout
+- 发现:
+  - 真实 session 中 `SessionStart` 已输出 identity 选择协议，并明确列出 `0. No identity (Not applicable Agent Identity / 不适用 Agent Identity)`
+  - 真实 session 中 `UserPromptSubmit` 已正确把 `1 reply exactly session-choice-smoke-ok` 解析为“选择 `research-agent` + 剩余任务”
+  - hooks session state 成功记录 `agent_id = research-agent`
+  - 本次 `codex exec` 最终失败点是网络请求流断开，而不是 hooks 逻辑失败
+- 假设:
+  - 在网络稳定的真实 session 中，当前会话内选择协议应已足以完成首轮初始化
+- 决策:
+  - 视“session 内 identity 选择协议”已通过真实 hooks 层验证
+  - 后续若再出现“看不到效果”，应优先区分 hooks 逻辑与 Codex 网络/执行层故障
+- 未解问题:
+  - 是否需要再补一轮完全成功的真实外部 smoke，以拿到 assistant 最终输出层面的正向证据
+- 下一步:
+  - 收敛 `agents mount` 为兼容/调试入口
+  - 处理运行期产物清理策略
+
+## R-0073 收敛 `agents mount` 定位并新增运行期产物清理脚本
+
+- 日期: 2026-04-05
+- 目标: 解决两类后续维护问题：旧 `agents mount` 与新 session 内选择主路径之间的定位冲突，以及 runtime 产物污染工作树的问题
+- 输入:
+  - 当前 CLI / hooks README
+  - 当前工作树中的未跟踪 runtime 产物
+- 动作:
+  - 将 README 中的主路径改为 session 内选择协议
+  - 将 `agents mount` 降级为兼容 / 调试入口
+  - 新增 `scripts/cleanup-runtime-artifacts.sh`
+  - 先用测试验证脚本只会删除未跟踪 runtime 文件，再对当前仓库执行一次清理
+- 发现:
+  - `agents mount` 仍可作为兼容入口，但不应继续在文档中被描述为推荐主路径
+  - 当前仓库内累计了大量未跟踪 runtime 记忆文件，会干扰 `git status`
+  - 用 `git ls-files --others --exclude-standard` 可以安全地只定位未跟踪 runtime 文件，而不碰已跟踪 seed 数据
+- 决策:
+  - `agents mount` 保留，但定位为兼容 / 调试命令
+  - `scripts/cleanup-runtime-artifacts.sh` 采用默认 dry-run、`--apply` 才删除的安全策略
+  - 该脚本仅清理 `agents/*/memory/{short-term,long-term}` 与 `agents/*/runs` 下的未跟踪文件
+- 验证:
+  - `node --test --experimental-strip-types scripts/test/cleanup-runtime-artifacts.test.ts`
+  - `scripts/cleanup-runtime-artifacts.sh`
+  - `scripts/cleanup-runtime-artifacts.sh --apply`
+- 未解问题:
+  - 是否还需要把该清理脚本接入一个更高层的维护命令，避免用户记忆脚本路径
+- 下一步:
+  - 如有需要，可再把清理能力提升为 `agents cleanup-runtime`
