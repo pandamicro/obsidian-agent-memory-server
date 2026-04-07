@@ -3304,3 +3304,25 @@
 - 结论:
   - 真实链路可达网络层，当前阻塞点是鉴权凭据缺失，而非本地 distill 逻辑
   - 在未注入有效 key 前，真实 provider 路径会被计为 skipped
+
+## R-0103 增加仓库级 env file 加载与生效验证
+
+- 日期: 2026-04-07
+- 目标: 为 `agents/reve` 提供统一环境变量文件，并验证其在运行时真实生效
+- 输入:
+  - 用户要求：设置 env file 存储环境变量，并确保可生效
+- 动作:
+  - `bin/agents` 与 `bin/reve` 启动时自动加载：
+    - 默认 `REPO_ROOT/.env.agent-memory`
+    - 可由 `OBSIDIAN_AGENT_MEMORY_SERVER_ENV_FILE` 覆盖
+  - 新增 `.env.agent-memory.example`（模板）
+  - `.gitignore` 增加 `.env.agent-memory`（避免本地密钥入库）
+  - 文档补充：CLI/REVE README 说明自动加载机制
+  - 生效验证（非单元测试、真实命令执行）：
+    - 使用临时 env 文件写入
+      - `OBSIDIAN_AGENT_MEMORY_SERVER_DISTILL_PROVIDER=mock`
+      - `OBSIDIAN_AGENT_MEMORY_SERVER_DISTILL_MODEL=gpt-5.2`
+    - 执行 `bin/agents init/run` + `bin/reve distill`
+    - 产物显示 `model_provider=mock`、`model_name=gpt-5.2`
+- 结论:
+  - env file 已能在 launcher 层生效并影响 distill 运行时配置解析

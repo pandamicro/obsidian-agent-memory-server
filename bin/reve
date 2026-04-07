@@ -2,9 +2,18 @@
 set -eu
 
 REPO_ROOT="/Users/screamcart-agent0/obsidian-agent-memory-server"
+CLI_PATH="$REPO_ROOT/projects/reve/src/cli.ts"
+ENV_FILE="${OBSIDIAN_AGENT_MEMORY_SERVER_ENV_FILE:-$REPO_ROOT/.env.agent-memory}"
+
+if [ -f "$ENV_FILE" ]; then
+  set -a
+  # shellcheck disable=SC1090
+  . "$ENV_FILE"
+  set +a
+fi
+
 SHARED_ROOT="${OBSIDIAN_AGENT_MEMORY_SERVER_SHARED_ROOT:-${OBSIDIAN_AGENT_MEMORY_SERVER_ROOT:-$REPO_ROOT}}"
 WORKSPACE_ROOT="${OBSIDIAN_AGENT_MEMORY_SERVER_WORKSPACE_ROOT:-$(pwd -P)}"
-CLI_PATH="$REPO_ROOT/projects/reve/src/cli.ts"
 
 if [ ! -f "$CLI_PATH" ]; then
   echo "reve: missing CLI at $CLI_PATH" >&2
