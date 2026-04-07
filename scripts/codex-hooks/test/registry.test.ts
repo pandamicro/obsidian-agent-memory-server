@@ -12,8 +12,6 @@ test('Codex hooks registry exposes the expected events', () => {
   };
 
   assert.deepEqual(Object.keys(parsed.hooks).sort(), [
-    'PostToolUse',
-    'PreToolUse',
     'SessionStart',
     'Stop',
     'UserPromptSubmit',
@@ -23,8 +21,6 @@ test('Codex hooks registry exposes the expected events', () => {
   assert.equal(sessionStart.matcher, 'startup|resume');
   assert.match(sessionStart.hooks[0]!.command, /scripts\/codex-hooks\/session-start\.ts/);
 
-  const preToolUse = (parsed.hooks.PreToolUse as Array<{ matcher?: string; hooks: Array<{ command: string }> }>)[0];
-  assert.equal(preToolUse.matcher, 'Bash');
-  assert.match(preToolUse.hooks[0]!.command, /scripts\/codex-hooks\/pre-tool-use\.ts/);
+  const stop = (parsed.hooks.Stop as Array<{ hooks: Array<{ command: string }> }>)[0];
+  assert.match(stop.hooks[0]!.command, /scripts\/codex-hooks\/stop\.ts/);
 });
-

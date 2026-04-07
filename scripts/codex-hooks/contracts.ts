@@ -12,6 +12,7 @@ export type HookEventName =
 export type HookInput = {
   hook_event_name?: HookEventName;
   session_id?: string;
+  thread_id?: string;
   turn_id?: string;
   source?: 'startup' | 'resume';
   cwd?: string;
@@ -24,6 +25,24 @@ export type HookInput = {
   transcript_path?: string;
   model?: string;
 };
+
+export type HookEventSource = 'native' | 'derived';
+
+export type HookEnvelope = {
+  schema_version: '1';
+  event: 'session-start' | 'user-prompt-submit' | 'stop' | 'pre-tool-use' | 'post-tool-use';
+  source: HookEventSource;
+  timestamp: string;
+  session_id: string;
+  thread_id?: string;
+  turn_id?: string;
+  agent_id?: string;
+  context: Record<string, unknown>;
+  confidence?: number;
+  parser_reason?: string;
+};
+
+export const HOOK_DERIVED_SIGNALS_ENV = 'OBSIDIAN_AGENT_MEMORY_SERVER_HOOK_DERIVED_SIGNALS';
 
 export type HookSpecificOutput = {
   hookEventName: HookEventName;
@@ -89,6 +108,68 @@ export function compactText(text: string, limit = 220): string {
 
 export function makeAdditionalContext(lines: string[]): string {
   return lines.filter(Boolean).join('\n').trim();
+}
+
+function toEnvelopeEventName(eventName: HookEventName): HookEnvelope['event'] {
+  switch (eventName) {
+    case 'SessionStart':
+      return 'session-start';
+    case 'UserPromptSubmit':
+      return 'user-prompt-submit';
+    case 'Stop':
+      return 'stop';
+    case 'PreToolUse':
+      return 'pre-tool-use';
+    case 'PostToolUse':
+      return 'post-tool-use';
+  }
+}
+
+export function normalizeHookEnvelope(
+  input: HookInput,
+  eventName: HookEventName,
+  options?: {
+    source?: HookEventSource;
+    agentId?: string;
+    context?: Record<string, unknown>;
+    confidence?: number;
+    parserReason?: string;
+  },
+): HookEnvelope {
+  const source = options?.source ?? 'native';
+  const envelope: HookEnvelope = {
+    schema_version: '1',
+    event: toEnvelopeEventName(eventName),
+    source,
+    timestamp: new Date().toISOString(),
+    session_id: (input.session_id ?? 'unknown-session').trim() || 'unknown-session',
+    context: options?.context ?? {},
+  };
+
+  const threadId = input.thread_id?.trim();
+  const turnId = input.turn_id?.trim();
+  const agentId = options?.agentId?.trim();
+
+  if (threadId) envelope.thread_id = threadId;
+  if (turnId) envelope.turn_id = turnId;
+  if (agentId) envelope.agent_id = agentId;
+
+  if (source === 'derived') {
+    if (typeof options?.confidence === 'number') {
+      const clamped = Math.max(0, Math.min(1, options.confidence));
+      envelope.confidence = clamped;
+    }
+    if (options?.parserReason) {
+      envelope.parser_reason = options.parserReason;
+    }
+  }
+
+  return envelope;
+}
+
+export function isDerivedSignalsEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  const raw = (env[HOOK_DERIVED_SIGNALS_ENV] ?? '').trim().toLowerCase();
+  return raw === '1' || raw === 'true' || raw === 'yes' || raw === 'on';
 }
 
 function debugHookArtifact(kind: string, content: string): void {

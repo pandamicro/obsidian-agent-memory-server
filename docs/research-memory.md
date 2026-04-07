@@ -2431,3 +2431,785 @@
   - 是否还需要把该清理脚本接入一个更高层的维护命令，避免用户记忆脚本路径
 - 下一步:
   - 如有需要，可再把清理能力提升为 `agents cleanup-runtime`
+
+## R-0074 排查 Happy 真实 session 未出现 identity 主动询问
+
+- 日期: 2026-04-05
+- 目标: 定位 Happy 真实 session `cmnl93bq5n7j73d14z36tbse2` 为什么没有出现预期的 identity 主动询问
+- 输入:
+  - 用户反馈：真实 Happy session 中没有看到 agent identity 主动 prompt
+  - Happy session id: `cmnl93bq5n7j73d14z36tbse2`
+  - Codex 本地 session / hook state / Happy 日志
+- 动作:
+  - 核对该 Happy session 的启动日志
+  - 核对对应 Codex thread id 与 hook state
+  - 检查目标 workspace `/Volumes/P44Pro/neonspark` 是否已有 binding 文件
+  - 检查 Codex 本地 session transcript 中首轮实际 assistant 输出
+- 发现:
+  - 该 Happy session 确实启动了一个新的 Codex thread：`019d5c04-30ab-7732-872f-001dd78e96f0`
+  - 目标 workspace 中不存在 `.codex/agent-memory/active-agent.json` 或 `active-agent-id.txt`
+  - 对应 hook state 记录了 `SessionStart` 与 `UserPromptSubmit` 都已触发，但 session 结束时既没有 `agent_id`，也没有 `identity_selection_declined`
+  - 这说明 hooks 并没有被绕过；相反，hooks 运行了，但未成功把“选择 identity”转化为显式的用户可见交互
+  - 同一 thread 的首轮 assistant 实际输出直接进入了用户原始任务处理，而不是先询问 identity
+- 假设:
+  - 当前 `SessionStart` / `UserPromptSubmit` 通过 `systemMessage` 与 `additionalContext` 注入的“请先选择 identity”约束，强度不足以保证模型一定先询问用户
+  - 也就是说，当前方案实现了“内部提示”，但没有实现“强制的对外显式询问”
+- 决策:
+  - 不再把“SessionStart 已注入 systemMessage”误判为“用户一定会看到主动 prompt”
+  - 后续要把目标改成“强制阻断未绑定 session 的任务执行，直到用户完成选择”，而不是仅靠提示文案劝导模型
+- 未解问题:
+  - Codex hooks 是否允许用 `stopReason` 或等价机制在未绑定时阻断 turn，逼迫进入选择流程
+  - 如果不能硬阻断，是否需要把 identity 选择协议做成更强的 `UserPromptSubmit` 解析与重写策略
+- 下一步:
+  - 研究 hooks 是否存在可靠的 turn 级 fail-closed 手段
+  - 若存在，改为未绑定时强制拦截普通任务输入
+
+## R-0075 将初始 hook 方向从阻断式选择改为严格自动匹配
+
+- 日期: 2026-04-05
+- 目标: 根据用户最新约束，纠正未绑定 session 的初始 hook 行为方向
+- 输入:
+  - 用户反馈：阻断式处理与 Codex agent 默认行为容易冲突，不适合辅助型 agent
+  - 用户要求：若 session start 已有具体需求，则判断哪个 agent 更适合并自动选择；找不到严格符合的 identity 时宁可不挂载
+- 动作:
+  - 重新评估“显式选择优先”与“严格自动匹配优先”的交互取舍
+  - 收紧新目标的成功判据：只有高置信度匹配才挂载，否则保持未挂载
+- 发现:
+  - 对辅助型 agent 而言，阻断用户原始任务会破坏默认工作流，尤其是在用户进入 session 时已经带着明确需求
+  - 当前更合适的方向不是“强制先选”，而是“尽量不打断用户”，只在证据足够强时自动挂载
+  - 因此，初始 hook 的责任应改成严格路由，而不是交互门禁
+- 假设:
+  - `SessionStart` 和首轮用户输入组合起来，可能足够支持一次高标准的 agent 匹配判断
+  - 高标准匹配需要明确的拒绝条件，不能因为弱相关关键词就挂载某个 identity
+- 决策:
+  - 暂停推进 fail-closed 阻断方案
+  - 下一轮设计改为：`SessionStart` / 初始上下文做严格自动匹配；高置信度命中才挂载，否则不挂载
+- 未解问题:
+  - 初始匹配到底允许使用哪些证据：用户第一条消息、workspace 路径、repo 特征、预置规则，还是它们的组合
+  - 自动匹配命中后，是否需要对用户显式告知“已自动挂载哪个 identity，以及为什么”
+- 下一步:
+  - 先和用户确认严格自动匹配允许使用的证据来源，再设计规则
+
+## R-0076 确认严格自动匹配证据源采用方案 3
+
+- 日期: 2026-04-06
+- 目标: 固化严格自动匹配的证据来源范围，进入可实现状态
+- 输入:
+  - 用户选择: `3`
+  - 候选策略:
+    1) 仅首条用户消息
+    2) 首条用户消息 + workspace/repo 路径
+    3) 首条用户消息 + workspace/repo 路径 + 预定义 specialization 规则
+- 动作:
+  - 记录用户明确选择 `3`
+  - 将“严格匹配阈值”和“宁可不挂载”作为实现前置约束
+- 发现:
+  - 仅用首条消息或路径都容易误判，无法满足“严格匹配”要求
+  - 方案 `3` 允许把可解释规则前置化，并为“不挂载”提供明确拒绝条件
+- 假设:
+  - 预定义 specialization 规则需保持保守，优先高 precision，必要时牺牲 recall
+- 决策:
+  - 初始 hook 自动选择采用方案 `3`
+  - 命中条件不充分时保持 unmounted，不注入阻断式选择协议
+- 未解问题:
+  - 首条消息在不同 session 入口是否总可得；若不可得，需要在首个 `UserPromptSubmit` 再尝试一次严格匹配
+  - 当多个 identity 同时命中规则时，是否一律视为歧义并不挂载
+- 下一步:
+  - 在 hooks driver 中实现 strict auto-match 与拒绝条件
+  - 用测试覆盖命中、歧义、低置信和 no-mount 分支
+
+## R-0077 落地 strict auto-match（方案 3）并完成回归验证
+
+- 日期: 2026-04-06
+- 目标: 将初始 hook 行为改为“严格自动匹配优先，未命中则不挂载且不阻断”
+- 输入:
+  - R-0076 已确认的方案 `3`
+  - 用户约束: 避免阻断式流程；宁可不挂载也不误挂载
+  - 现有 hooks driver 与测试集
+- 动作:
+  - 在 `scripts/codex-hooks/driver.ts` 新增 agent profile 读取与 specialization 规则
+  - 新增 strict 判定函数：只在唯一且高置信命中时自动挂载
+  - `SessionStart` 从“强制选择提示”改为“尝试 strict auto-match，失败即 inert”
+  - `UserPromptSubmit` 保留显式选择能力（数字 / agent_id / no identity），并在无显式选择时执行 strict auto-match
+  - 对 auto-mount 成功分支输出 `Auto-mounted ... via strict match` 说明
+  - 更新 `scripts/codex-hooks/test/driver.test.ts`，覆盖唯一命中和歧义 no-mount
+  - 更新 `docs/portable-agent-contract/dynamic-memory/codex-hooks-memory-registration.md` 描述新主路径
+  - 跑 hooks/cli/cleanup 全量相关测试
+  - 停止 Happy 相关进程后重建 `packages/happy-cli`
+- 发现:
+  - 之前 auto-match 分支会被 `shouldRefreshPrompt` 误拦截，导致命中后仍不挂载；已修复为“auto-match 命中时绕过该拦截”
+  - strict 规则在“研究 + Unity”混合提示下会正确判为歧义并拒绝挂载
+  - 无绑定且无 strict 命中时，hooks 现在保持静默，不再强制注入选择协议
+- 假设:
+  - 当前 specialization 规则仍是保守启发式，后续需通过真实 session 样本继续校准 precision/recall
+- 决策:
+  - MVP 进入“non-blocking strict auto-match”主路径
+  - 显式 `no identity` 继续保留，并优先于自动匹配
+- 验证:
+  - `node --test --experimental-strip-types scripts/codex-hooks/test/*.test.ts`
+  - `npm --prefix projects/cli test`
+  - `node --test --experimental-strip-types scripts/test/cleanup-runtime-artifacts.test.ts`
+  - `HOME=/tmp corepack yarn workspace happy build`（在 Happy repo）
+- 未解问题:
+  - 是否需要把 strict rules 抽到可配置文件，避免后续继续在 driver 中硬编码
+  - 是否需要记录 auto-match 拒绝原因（弱命中/多命中）用于线上诊断
+- 下一步:
+  - 在真实 Happy session 再做 smoke，检查首轮具体需求下的自动挂载可见性
+
+## R-0078 对标 oh-my-codex 的 hooks 设计并提炼 README 启发
+
+- 日期: 2026-04-06
+- 目标: 学习 `oh-my-codex` 对 Codex hooks 的使用方式，评估对本仓库 `scripts/codex-hooks/README.md` 设计的可迁移启发
+- 输入:
+  - `oh-my-codex` 官方仓库（main）
+  - 本仓库 `scripts/codex-hooks/README.md`
+- 来源:
+  - https://github.com/Yeachan-Heo/oh-my-codex
+  - https://github.com/Yeachan-Heo/oh-my-codex/blob/main/docs/hooks-extension.md
+  - https://github.com/Yeachan-Heo/oh-my-codex/blob/main/src/cli/hooks.ts
+  - https://github.com/Yeachan-Heo/oh-my-codex/blob/main/src/hooks/extensibility/loader.ts
+  - https://github.com/Yeachan-Heo/oh-my-codex/blob/main/src/hooks/extensibility/dispatcher.ts
+  - https://github.com/Yeachan-Heo/oh-my-codex/blob/main/src/hooks/extensibility/events.ts
+  - https://github.com/Yeachan-Heo/oh-my-codex/blob/main/src/hooks/extensibility/plugin-runner.ts
+  - https://github.com/Yeachan-Heo/oh-my-codex/blob/main/src/scripts/notify-hook.ts
+  - `scripts/codex-hooks/README.md`
+- 动作:
+  - 读取 `oh-my-codex` hooks 文档与实现代码，聚焦事件模型、插件模型、容错边界、团队场景行为
+  - 对照当前 `scripts/codex-hooks/README.md` 的定位（thin runtime + agents CLI 主导）
+  - 提炼仅影响 README 信息架构的启发点（不冻结实现）
+- 发现:
+  - `oh-my-codex` 将 hooks 作为“可插拔扩展层”而不是单一脚本：提供 `omx hooks init/status/validate/test` 全链路脚手架与校验入口
+  - 其插件默认启用，且用显式环境变量关闭（`OMX_HOOK_PLUGINS=0`），并提供超时配置（`OMX_HOOK_PLUGIN_TIMEOUT_MS`）
+  - 事件模型显式区分 `native` 与 `derived`，并使用统一 envelope（`schema_version/event/source/context/session_id/thread_id/turn_id/mode`）
+  - 派生信号（如 `needs-input`、`pre-tool-use`、`post-tool-use`）是可选门控（默认关闭），体现“先稳定主事件，再渐进增加推断事件”的策略
+  - 运行时容错非常明确：插件在独立 runner 子进程执行，带超时与 SIGTERM/SIGKILL 兜底；异常记日志但不阻断主流程（best effort）
+  - 团队场景下默认抑制 worker 侧副作用（只保留 leader 侧 canonical side-effect），避免重复通知/重复写入
+  - `notify-hook` 不是只做通知，而是承担事件归一、去重、状态落盘、再分发到 hooks extensibility 的“薄编排总线”角色
+- 假设:
+  - 本项目若继续坚持“thin runtime + agents CLI 主导”，仍可借鉴其“文档层先定义事件契约、容错语义、可观测性语义”的做法，而不需要复制其整套插件系统
+  - 对当前阶段最有价值的迁移不是新增复杂能力，而是让 README 明确：哪些是硬契约、哪些是 best-effort、哪些只在特定模式触发
+- 决策:
+  - 当前不引入 `oh-my-codex` 式完整插件框架
+  - 优先将其可迁移经验用于 `scripts/codex-hooks/README.md` 信息结构增强：
+  - 增加“事件分类与触发矩阵（native/derived）”
+  - 增加“失败语义（fail-open/fail-closed）与超时策略”
+  - 增加“副作用边界（leader/worker 或 mounted/unmounted 分支）”
+  - 增加“可观测性（state/log/debug 路径与最小排障步骤）”
+  - 增加“扩展策略声明（当前不开放插件，仅保留未来扩展位）”
+- 未解问题:
+  - 当前 hooks 是否需要引入“派生事件开关”概念，还是保持纯原生事件直到 strict auto-match 进一步稳定
+  - 当前 memory flush 与后续候选事件是否需要统一 envelope，避免 Stop 阶段语义漂移
+  - 若未来支持多 runtime（不仅 Codex），README 中“契约层”与“Codex 适配层”如何分栏避免耦合误读
+- 下一步:
+  - 基于上述启发，先提出一版 `scripts/codex-hooks/README.md` 重构目录草案（仅文档，不改协议实现）
+  - 待确认后再落地 README 重写，并补对应最小契约测试点
+
+## R-0079 基于核心设计文档筛选并融入 oh-my-codex 高价值 hooks 经验
+
+- 日期: 2026-04-06
+- 目标: 以 `docs/portable-agent-contract/dynamic-memory/codex-hooks-memory-registration.md` 为主文档，吸收 `oh-my-codex` hooks 经验中对本项目真正有价值的部分
+- 输入:
+  - `docs/portable-agent-contract/dynamic-memory/codex-hooks-memory-registration.md`
+  - `oh-my-codex` hooks 文档与实现（events/loader/dispatcher/plugin-runner/notify-hook）
+  - 项目边界约束（仅 Agent 专属技能与专属记忆，不转向通用 workflow 平台）
+- 动作:
+  - 在核心设计文档新增“对标经验筛选”章节，显式区分可迁移与不迁移项
+  - 新增 MVP 事件契约章节，统一 envelope 字段和 `native/derived` 语义
+  - 将 `derived` 事件设为默认关闭、显式开关开启，并要求 `confidence/parser_reason`
+  - 在失败策略中补充超时降级、重复失败抑制、防 warning 风暴约束
+  - 新增“可观测性与排障最小面”，固定最小排障路径
+- 发现:
+  - 仅靠“hooks 是 thin glue”不足以约束运行时行为，仍需在设计文档层定义最小事件契约与失败语义
+  - `oh-my-codex` 的高价值不在插件框架本身，而在“事件归一 + 容错隔离 + 可观测性”这三件基础工程纪律
+  - 若不显式写出“不迁移项”，后续很容易把本项目带向插件生态或团队 workflow 扩展
+- 假设:
+  - 当前 `derived` 事件默认关闭可显著降低误判与语义漂移风险；后续再基于真实样本决定是否扩大使用范围
+- 决策:
+  - 保留并强化：统一事件 envelope、best-effort 副作用、超时降级、最小可观测面
+  - 明确排除：通用插件系统、团队通知总线、workflow 平台化扩张
+- 未解问题:
+  - `OBSIDIAN_AGENT_MEMORY_SERVER_HOOK_DERIVED_SIGNALS` 是否应在实现层立即落地，还是先保持文档约束
+  - 高成本逻辑的“可中断执行”在当前 driver 中是否需要独立执行器
+- 下一步:
+  - 对照当前 `scripts/codex-hooks/driver.ts` 做一次“契约-实现一致性检查”，列出已满足/未满足项
+  - 仅在证据充分后再决定是否推进 derived 开关和超时预算参数化
+
+## R-0080 对比 codex-hooks 核心设计文档与当前 MVP 实现的重构差距分析
+
+- 日期: 2026-04-06
+- 目标: 对比 `docs/portable-agent-contract/dynamic-memory/codex-hooks-memory-registration.md` 与当前 `scripts/codex-hooks` MVP 实现，识别为达到文档目标需优化/重构的部分
+- 输入:
+  - 核心设计文档（含 R-0078/R-0079 融合后的事件契约、失败策略、可观测性约束）
+  - 当前实现：`scripts/codex-hooks/{driver.ts,state.ts,contracts.ts,*.ts}`
+  - 现有测试：`scripts/codex-hooks/test/*`
+- 动作:
+  - 逐项核对文档目标与代码行为
+  - 标记“已对齐/部分对齐/未对齐”
+  - 提炼优先级重构清单（必须项/增强项）
+- 发现:
+  - 已对齐：薄适配脚本 + 共享 driver 分层、主流程事件（SessionStart/UserPromptSubmit/Stop）、Bash 护栏与证据回填、strict auto-match 与 no-identity inert 路径
+  - 部分对齐：去重已实现但 key 维度与文档建议不完全一致；失败基本 fail-open 但缺少结构化 warning 与重复失败抑制
+  - 未对齐：统一事件 envelope（native/derived）尚未落地；derived 开关与字段约束未实现；`agents` 调用缺少超时预算；可观测性路径与文档口径不一致（文档写 repo-local state，实现默认写 `~/.codex/memories/...`）
+  - 关键风险：文档已声明的运行语义（事件契约/降级策略）若不在代码与测试中固化，会导致后续行为漂移
+- 假设:
+  - 先做“契约层收敛（envelope + timeout + observability 口径统一）”再做功能增强，可最低成本降低回归风险
+- 决策:
+  - 下一轮优先重构目标应聚焦四项：
+  - 事件 envelope 统一化
+  - `agents` 调用超时与降级
+  - 可观测性路径与日志语义统一
+  - 测试补齐文档新增约束
+- 未解问题:
+  - session state 归宿最终是 repo-local 还是 machine-level；目前文档与实现不一致
+  - pending feedback 保存“完整对象”还是“id sidecar”作为最终口径
+- 下一步:
+  - 产出逐文件改造方案与最小变更序列（先不改行为，再逐步切换）
+
+## R-0081 确认进入 codex-hooks 契约收敛重构切片阶段
+
+- 日期: 2026-04-06
+- 目标: 在用户确认后，将 R-0080 的差距分析转为可执行的逐文件改造清单与最小变更切片
+- 输入:
+  - 用户确认“同意”推进重构清单
+  - R-0080 的 P0/P1 差距
+- 动作:
+  - 冻结重构优先级：先契约收敛，再能力增强
+  - 产出按文件归属的改造任务与分批落地顺序
+- 发现:
+  - 若直接并行改动 driver/state/install/tests，回归定位成本高
+  - 先做“输入契约层 + 不改行为适配”可降低风险并提升可测试性
+- 假设:
+  - 采用 4-5 个小切片可在不破坏现有 strict auto-match 主路径的前提下完成契约升级
+- 决策:
+  - 采用最小切片顺序：`event envelope -> timeout/degrade -> observability/path alignment -> dedupe/failure suppression -> tests`
+- 未解问题:
+  - state 最终归宿口径（repo-local vs machine-level）需在切片 3 前最终确认
+- 下一步:
+  - 输出逐文件改造清单与每个切片的验收标准
+
+## R-0082 冻结 session state 归宿为 machine-level 并完成文档口径收敛
+
+- 日期: 2026-04-06
+- 目标: 将 R-0080 的关键决策点（state 归宿）从待定改为已定，并同步修正文档口径
+- 输入:
+  - 用户明确选择：`B`（Machine level 的跨 agent / 跨 session states）
+  - 当前实现 `resolveStateRoot` 默认路径
+- 动作:
+  - 更新 `scripts/codex-hooks/README.md`：
+    - 主流程描述改为 strict auto-match 主路径
+    - 补充 machine-level state 默认路径与覆盖变量
+  - 更新 `docs/portable-agent-contract/dynamic-memory/codex-hooks-memory-registration.md`：
+    - 状态模型新增 machine-level 归宿声明
+    - 可观测性章节把 state 路径改为 machine-level 实际路径
+    - 开放问题从“是否迁移 state”改为“machine-level state schema 明确化”
+- 发现:
+  - 当前实现与用户偏好一致（machine-level），主要问题是文档口径滞后
+  - README 仍残留旧“SessionStart 强制选择”表述，已与 strict auto-match 主路径不一致
+- 决策:
+  - session state 归宿正式冻结为 machine-level
+  - 后续实现重构不再引入 repo-local state 作为默认归宿
+- 未解问题:
+  - machine-level state 的 schema 版本化与迁移策略仍待定义
+- 下一步:
+  - 进入 PR-1：实现事件 envelope 归一层（不改变现有业务决策）
+
+## R-0083 落地 PR-1：接入 Hook Envelope 归一层并完成 machine-level 口径同步
+
+- 日期: 2026-04-06
+- 目标: 在不改变现有业务策略的前提下，先实现事件契约的最小落地（envelope 归一）并完成 state 归宿口径收敛
+- 输入:
+  - 用户确认：state 归宿采用 B（machine-level）
+  - R-0081 切片顺序（PR-1: event envelope）
+- 动作:
+  - 更新 `scripts/codex-hooks/README.md`：
+    - 主流程改为 strict auto-match 主路径
+    - 明确 machine-level state 默认路径与覆盖环境变量
+  - 更新 `docs/portable-agent-contract/dynamic-memory/codex-hooks-memory-registration.md`：
+    - 明确 state 归宿为 machine-level
+    - 可观测性章节路径改为 machine-level 实际路径
+  - 在 `scripts/codex-hooks/contracts.ts` 增加：
+    - `HookEnvelope` / `HookEventSource` 类型
+    - `normalizeHookEnvelope(...)` 归一函数
+  - 在 `scripts/codex-hooks/driver.ts` 各事件入口接入 envelope 归一（SessionStart/UserPromptSubmit/Stop/PreToolUse/PostToolUse）
+  - 新增契约测试 `scripts/codex-hooks/test/contracts.test.ts`
+- 发现:
+  - envelope 接入可在不改变 strict auto-match 与 flush 语义的情况下先建立契约层稳定性
+  - machine-level state 与用户目标一致，主要成本在文档口径同步而非实现迁移
+- 假设:
+  - 先完成契约层落地后，再做 timeout/degrade 改造可降低回归排查成本
+- 决策:
+  - PR-1 完成，下一步进入 PR-2（`agents` 调用超时与降级语义）
+- 验证:
+  - `node --test --experimental-strip-types scripts/codex-hooks/test/*.test.ts`
+  - 结果: 15 passed, 0 failed
+- 未解问题:
+  - envelope 目前仅归一并局部使用，后续是否将 eventKey 与 failure suppression 完全切换到 envelope 字段（PR-4 再处理）
+- 下一步:
+  - 在 `runAgentsCommand` 引入可配置 timeout 和错误分类（timeout/spawn/exit）
+  - 补充 fail-open 与重复失败抑制测试
+
+## R-0084 落地 PR-2：agents 调用超时预算与降级语义
+
+- 日期: 2026-04-06
+- 目标: 为 hooks driver 的 `agents` CLI 调用补齐超时预算与错误分类，满足 fail-open 与可诊断性目标
+- 输入:
+  - PR-2 目标：timeout/degrade
+  - 当前 `runAgentsCommand` 仅按退出码判断
+- 动作:
+  - 在 `scripts/codex-hooks/driver.ts` 中引入：
+    - `AgentsCommandReason`（`ok` / `timeout` / `spawn_error` / `exit_nonzero`）
+    - `readAgentsTimeoutMs`（默认 12000ms，范围 1000-120000）
+    - `spawnSync(..., timeout)` 并按错误类型归类
+  - 为 `createMemoryHookDriver` 增加 `agentsTimeoutMs` 可选参数
+  - 将 `list/verify/run` 路径统一接入 timeout 参数
+  - 调整失败提示语义（区分 timed out / spawn failed / failed）
+  - 新增测试 `scripts/codex-hooks/test/agents-timeout.test.ts`，覆盖 verify 超时时 SessionStart fail-open
+  - 更新 README 与核心设计文档：记录 timeout 配置项
+- 发现:
+  - 在 list 成功、verify 超时场景下，driver 能保持 `continue: true` 并返回可诊断信息，不阻断主任务
+  - timeout 预算参数化后，可在测试与真实环境分别采用不同阈值
+- 决策:
+  - PR-2 完成，继续维持 fail-open 主策略
+- 验证:
+  - `node --test --experimental-strip-types scripts/codex-hooks/test/*.test.ts`
+  - 结果: 16 passed, 0 failed
+- 未解问题:
+  - 失败抑制（同一事件重复错误降噪）尚未落地，留在 PR-4
+  - install 冲突检测（global/repo 双活）尚未落地，留在 PR-3/PR-5
+- 下一步:
+  - 进入 PR-3：可观测性增强与安装冲突检测
+
+## R-0085 落地 PR-3：machine-level 可观测性增强与安装冲突检测
+
+- 日期: 2026-04-06
+- 目标: 补齐 PR-3 的两项能力：machine-level observability logs 与 global/repo 双活冲突防护
+- 输入:
+  - PR-3 目标：observability + install conflict guard
+  - 当前实现已有 machine-level state root
+- 动作:
+  - 在 `scripts/codex-hooks/state.ts` 新增：
+    - `getHookLogPath(stateRoot)`
+    - `appendHookLog(stateRoot, payload)`（JSONL best-effort）
+  - 在 `scripts/codex-hooks/driver.ts` 各事件入口新增 `received` 日志，以及 verify 路径调用结果日志（含 reason/code）
+  - 升级 `scripts/codex-hooks/install-hooks.sh`：
+    - 支持 `--workspace <path>` 与 `--force`
+    - 默认检测 workspace 下 `.codex/hooks.json` 冲突并阻断（exit 2）
+    - `--force` 显式旁路并输出 warning
+  - README 与核心设计文档同步：
+    - 补充 machine-level logs 路径
+    - 补充安装冲突检测与 `--force` 规则
+  - 新增测试：
+    - `scripts/codex-hooks/test/install-hooks.test.ts`
+    - `driver.test.ts` 中新增 machine-level observability log 断言
+- 发现:
+  - 以 JSONL 写 machine-level logs 能在不侵入主流程的前提下提供最低限度诊断证据
+  - 安装脚本加入冲突检测后，可显式避免“global + repo-local 双活”误配置
+- 决策:
+  - PR-3 完成，继续保持 best-effort logging（日志失败不阻断 hooks）
+- 验证:
+  - `node --test --experimental-strip-types scripts/codex-hooks/test/*.test.ts`
+  - 结果: 19 passed, 0 failed
+- 未解问题:
+  - 失败抑制（重复错误降噪）尚未落地，留在 PR-4
+- 下一步:
+  - 进入 PR-4：去重键口径收敛 + repeated failure suppression
+
+## R-0086 落地 PR-4：去重键口径收敛与重复失败抑制
+
+- 日期: 2026-04-06
+- 目标: 将去重键与文档口径对齐，并实现最小可用的 repeated failure suppression，降低 warning 风暴风险
+- 输入:
+  - 文档约束：去重键以 `session_id + turn_id + event` 为核心
+  - R-0084/R-0085 后的 driver 现状
+- 动作:
+  - 在 `scripts/codex-hooks/driver.ts` 收敛 `eventKey` 维度，移除 `tool_name` 参与去重
+  - 在 `scripts/codex-hooks/state.ts` 增加 `recent_failures` 状态与 helper：
+    - `trackFailure(...)`
+    - `clearFailure(...)`
+  - 在 verify/run 失败路径接入失败跟踪与抑制：
+    - 第一次失败保留可见错误
+    - 同键后续失败返回 `continue: true` 且不重复输出 `systemMessage`
+  - 新增测试：
+    - `scripts/codex-hooks/test/failure-suppression.test.ts`（重复 verify 失败抑制）
+    - `driver.test.ts` 增补同 `event/session/turn` 但不同 `tool_use_id` 仍去重
+  - 文档同步：核心设计文档补充“首个失败可见、后续同键静默降级”策略
+- 发现:
+  - 在不引入复杂 backoff 策略的前提下，“首错可见 + 同键静默”已可明显降低重复错误噪音
+  - 去重键收敛后，同 turn 内重复触发的幂等性更贴近设计口径
+- 决策:
+  - PR-4 完成，保留当前最小抑制策略，后续可再按真实样本评估是否引入时间窗口与指数退避
+- 验证:
+  - `node --test --experimental-strip-types scripts/codex-hooks/test/*.test.ts`
+  - 结果: 21 passed, 0 failed
+- 未解问题:
+  - 失败抑制键是否应进一步纳入 operation 粒度 + 时间窗口（当前为最小实现）
+- 下一步:
+  - 进入 PR-5：补剩余契约文档同步与测试矩阵收口（包含 derived 开关占位测试）
+
+## R-0087 落地 PR-5：契约收口（derived 占位、契约测试补齐、状态矩阵）
+
+- 日期: 2026-04-06
+- 目标: 完成 PR-5 收口，固化“已实现/部分实现/规划中”边界并补足契约回归护栏
+- 输入:
+  - PR-5 范围：文档收口 + 契约测试 + derived 占位
+- 动作:
+  - 在 `scripts/codex-hooks/contracts.ts` 增加 `HOOK_DERIVED_SIGNALS_ENV` 与 `isDerivedSignalsEnabled(...)`
+  - 新增测试 `derived-signals.test.ts`：
+    - 验证 derived 开关默认关闭与显式开启 token
+    - 验证开启开关不改变当前 native 主路径（MVP）
+  - 新增测试 `stop-contract.test.ts`：
+    - 验证 Stop 仍是 side-effect 导向，不依赖 `hookSpecificOutput`
+  - 更新 README：
+    - 增加 derived 开关占位说明
+    - 增加实现状态摘要（Implemented/Partial/Planned）
+  - 更新核心设计文档：
+    - 增加“实现状态矩阵（MVP 收口）”
+- 发现:
+  - 当前代码已具备 derived 开关契约占位，但确实尚未产出 derived 事件；该边界需要文档显式声明
+  - Stop 侧契约测试补齐后，可防止后续误回归到依赖额外输出
+- 决策:
+  - PR-5 完成，本轮重构切片（PR-1~PR-5）收口
+- 验证:
+  - `node --test --experimental-strip-types scripts/codex-hooks/test/*.test.ts`
+  - 结果: 24 passed, 0 failed
+- 未解问题:
+  - derived 事件产出与 `confidence/parser_reason` 驱动动作仍属下一阶段
+- 下一步:
+  - 若进入下一轮，可专项设计 derived 事件最小闭环（仅观测，不触发破坏性 side effects）
+
+## R-0088 按用户指令收缩 hooks 到 prompt-focused 主链路
+
+- 日期: 2026-04-06
+- 目标: 按用户最新偏好，移除 `PreToolUse` / `PostToolUse`，只保留 prompt-focused 主链路
+- 输入:
+  - 用户要求："移除 PreToolUse 和 PostToolUse 的 hook，我们重点关注在用户 prompt"
+- 动作:
+  - 更新仓库模板 `.codex/hooks.json`，删除 `PreToolUse` 与 `PostToolUse`
+  - 运行 `scripts/codex-hooks/install-hooks.sh` 同步到 `~/.codex/hooks.json`
+  - 验证仓库级与机器级 hooks key 均为 `SessionStart, UserPromptSubmit, Stop`
+- 发现:
+  - 当前机器级与仓库级 registry 已保持一致，Bash 工具前后拦截链路已从注册层停用
+- 决策:
+  - 当前运行面聚焦在 `SessionStart/UserPromptSubmit/Stop` 三个事件
+- 未解问题:
+  - 相关测试（Pre/Post）后续是否保留为可选模式，或转入兼容分支
+- 下一步:
+  - 若继续收敛，可把 README 与核心设计文档的 Hook matrix 同步改为“默认三事件，Pre/Post 为可选扩展”
+
+## R-0089 同步核心设计文档为三事件默认注册策略
+
+- 日期: 2026-04-06
+- 目标: 将 `docs/portable-agent-contract/dynamic-memory/codex-hooks-memory-registration.md` 与当前 hooks 实际注册状态同步（默认三事件）
+- 输入:
+  - 用户要求：同样更新核心设计文档
+  - 当前 registry：`SessionStart/UserPromptSubmit/Stop`
+- 动作:
+  - 在文档约束段明确区分“Codex 可用事件集合”与“本项目当前默认注册集合”
+  - 将 `PreToolUse/PostToolUse` 定位改为可选扩展（默认不注册）
+  - 调整 Hook matrix、数据流、fail-closed 条件、对接点、集成测试建议、rollout 顺序
+  - 在实现状态矩阵中新增“默认注册事件集（3 hooks）”和“Pre/Post 默认未启用”
+  - 修正文档章节标题，避免 `PreToolUse` 重复标题歧义
+- 发现:
+  - 文档与运行时 registry 已收敛到一致口径：默认三事件，Bash 扩展可选
+- 决策:
+  - 后续若恢复 Pre/Post，需按“可选扩展开关”而非默认注册回归
+- 未解问题:
+  - 是否需要把 Pre/Post 变更为单独 profile（例如 prompt-focused vs bash-guarded）
+- 下一步:
+  - 若需要，可补一个 `hooks profile` 文档小节定义默认/扩展两套注册清单
+
+## R-0090 评估 research-agent 与 unity-optimization-agent 的 hooks 记忆碎片收集质量
+
+- 日期: 2026-04-06
+- 目标: 评估截至当前 `research-agent` 与 `unity-optimization-agent` 的记忆碎片收集效果，并判断短期记忆是否足以进入蒸馏
+- 输入:
+  - `agents/research-agent/*`
+  - `agents/unity-optimization-agent/memory/{short-term,long-term}/*`
+  - `agents/unity-optimization-agent/runs/*`
+  - `docs/portable-agent-contract/dynamic-memory/short-term-feedback.md`
+  - `docs/portable-agent-contract/dynamic-memory/memory-distillation.md`
+  - `projects/cli/src/cli.ts`（`handleRun` 落盘逻辑）
+- 动作:
+  - 统计两个目标 agent 当前短期/长期/runs 数量
+  - 抽样核对 `short-term` 字段完整性（事件主键、候选信号、来源类型）
+  - 核对 `long-term` 与 `runs` 是否为可追溯蒸馏对象，还是占位性输出
+  - 对照短期反馈准入标准（`observable/linkable/evaluatable/distillable`）给出门槛判断
+- 发现:
+  - `research-agent` 当前为 `short-term=0, long-term=0, runs=0`，没有可评估碎片
+  - `unity-optimization-agent` 当前为 `short-term=5, long-term=11, runs=5`；其中 5 条短期事件均来自 `[hook flush] ...` 输入串
+  - `unity-optimization-agent` 的 5 条短期事件中，`event_id/session_id/source_kind/promotion_target/candidates` 顶层字段均为空或缺失；`candidates` 不是结构化数组
+  - 短期事件的可用证据主要以“原始长文本 input”存在，`evidence_refs` 只指向 `input:<message_id>`，缺少结构化 outcome/feedback 对象
+  - 对应长期对象多数是 `Placeholder memory derived from input: ...`，属于原文镜像，不是 `Episode -> Learning` 的蒸馏产物
+  - `projects/cli/src/cli.ts` 的 `handleRun` 当前实现是“写短期 captured + 写长期 placeholder + 写 run summary”，未执行结构化解析、冲突归并或晋升判定
+- 假设:
+  - `research-agent` 零样本很可能是近期 session 未绑定到该 identity（而非 hooks 完全不可用）；该判断尚未做独立 mount/binding 复核
+- 决策:
+  - 现阶段 hooks 的“捕获能力”可判定为有效（能稳定留存原始输入），但“蒸馏前置质量”不足（结构化反馈字段缺失）
+  - 对 `unity-optimization-agent`，当前短期记忆可用于“人工复盘/人工抽取”，不足以直接自动蒸馏为 `Learning` 或 `Behavior Delta`
+- 未解问题:
+  - 是否在 `Stop` 路径引入最小 parser，把 `session/agent/workspace/candidates` 从输入串提升为结构化字段
+  - 是否定义最小 feedback 聚合对象（`supporting/conflicting/insufficient`）并落盘，以满足 `evaluatable/distillable`
+  - 是否对“仅占位 long-term”设置低优先级或延迟晋升，避免长期记忆噪音
+- 下一步:
+  - 先补一个“最小结构化提取层”（只抽关键 envelope 与 candidates），不改现有 fail-open 主链路
+  - 再补蒸馏门控：只有满足 `observable+linkable+evaluatable+distillable` 才允许 `Episode -> Learning`
+
+## R-0091 聚焦短期记忆抓取：MVP 结构与 plans/mvp 的主要问题及优化方向
+
+- 日期: 2026-04-06
+- 目标: 围绕“短期记忆抓取”评估 MVP 结构与 `plans/mvp` 设计，识别当前主要问题并给出可执行优化顺序
+- 输入:
+  - `plans/mvp/2026-04-01-codex-agent-identity-mvp-plan.md`
+  - `plans/mvp/2026-04-01-agent-identity-and-cli-contract.md`
+  - `projects/cli/src/cli.ts`
+  - `projects/cli/test/cli.test.ts`
+  - `docs/portable-agent-contract/dynamic-memory.md`
+  - `docs/portable-agent-contract/dynamic-memory/short-term-feedback.md`
+- 动作:
+  - 对照 MVP 计划中的“最小字段完整性”与当前 `run` 落盘结构
+  - 对照短期反馈准入标准（`observable/linkable/evaluatable/distillable`）与现有事件可评估性
+  - 检查测试是否覆盖“短期质量门槛”而不仅是“文件存在性”
+- 发现:
+  - `plans/mvp` 将重点放在“链路跑通”，允许弱实现，这在 M1 阶段合理；但当前讨论已转向“可蒸馏性”，目标函数发生变化
+  - `projects/cli/src/cli.ts` 的 `handleRun` 仍是最小写盘：短期事件写入 `input` 原文、长期对象写入 `Placeholder summary`；未做结构化提取、反馈挂接、晋升门控
+  - 当前短期事件虽满足公共信封最小必填字段，但对 `short-term-feedback` 文档中的准入标准支持不足：可观测可追溯弱、可评估性不足、蒸馏门控缺失
+  - `projects/cli/test/cli.test.ts` 当前主要验证“文件生成与基本字段存在”，未覆盖“候选信号结构化抽取、证据引用质量、蒸馏前门控判定”
+  - `plans/mvp` 中“事件文件字段完整”缺少机器可执行的“完整性定义”（例如哪些字段可空、哪些必须具备语义质量）
+- 假设:
+  - 若保持当前“原文直写 + 占位长期对象”策略不变，短期记忆会持续累积为日志形态，后续蒸馏成本将转移到人工清洗
+- 决策:
+  - 短期抓取优化应优先做“结构化提取与质量门控”，而非先扩展更多 hook 事件
+  - 在不破坏 fail-open 与最小链路前提下，先引入轻量 sidecar/derived 字段，提升 `evaluatable/distillable`
+- 未解问题:
+  - `input` 原文在短期事件中的保留策略：默认保留、截断保留、还是外置引用
+  - `feedback_object` 是否单独文件化，还是先以内嵌 sidecar 形态落在短期事件旁路
+  - 门控失败（insufficient）时是否还要立即写长期占位对象
+- 下一步:
+  - 补一版“短期记忆质量契约（MVP+）”文档，明确结构化字段、准入判定和失败降级
+  - 再将 CLI 与 hooks 的当前实现切到“先判定、后晋升”的最小策略
+
+## R-0092 落地 MVP 短期记忆质量补强并冻结长期写入
+
+- 日期: 2026-04-06
+- 目标: 在不扩大 MVP 边界前提下，补齐短期记忆采集质量要求；暂停长期记忆准入判断与长期写入
+- 输入:
+  - 用户约束：只关注短期记忆质量；当前不做长期准入判断，也不写任何长期记忆
+  - 现有实现：`projects/cli/src/cli.ts`、`scripts/codex-hooks/driver.ts`
+  - 现有测试：`projects/cli/test/cli.test.ts`、`scripts/codex-hooks/test/*.test.ts`
+- 动作:
+  - CLI `run` 改为“仅写短期事件 + 运行摘要”，移除长期对象写入
+  - CLI `run` 增加短期结构化解析与质量字段：`source_kind/session_id/workspace_root/assistant_summary/candidates/quality`
+  - CLI `verify` 改为验证短期事件（不再依赖长期对象存在）
+  - hooks memory context 改为读取 `short-term` 最新摘要，提示 `Latest short-term ref`
+  - hooks `Stop` 改为短期收口，不触发长期写入路径
+  - 状态模型移除 `pending_long_term_candidates`
+  - 同步更新 MVP 计划/契约文档与 short-term-feedback 文档的阶段注记
+  - 同步更新 CLI 与 hooks 测试用例
+- 发现:
+  - 保留现有 `agents run` 入口并让其只写短期事件，可在不新增命令面的情况下完成“长期冻结”
+  - 将 `verify` 从“必须回读长期对象”改为“回读最新短期事件”，可以避免未产生长期对象时的误失败
+  - 默认三事件 hooks（SessionStart/UserPromptSubmit/Stop）在短期优先模式下仍可稳定运行
+- 假设:
+  - 现有 `quality.status=pass/needs_review` 足以作为 MVP 阶段的短期采集质量分层；后续如需更细粒度可再扩展
+- 决策:
+  - MVP 当前阶段执行“short-term first”：短期质量强制、长期写入冻结
+  - 长期相关判断与晋升动作延期到下一阶段专项
+- 验证:
+  - `npm --prefix projects/cli test`：11 passed, 0 failed
+  - `node --test --experimental-strip-types scripts/codex-hooks/test/*.test.ts`：24 passed, 0 failed
+- 未解问题:
+  - `quality` 口径是否需要固定成单独 schema 文档（当前已实现，但尚未独立 schema 文件）
+  - 后续恢复长期流程时，如何保证从 `short-term quality` 到长期晋升门控的可追溯映射
+- 下一步:
+  - 补一份短期质量契约（字段级）与样例库，锁定“可用且达标”的判定标准
+  - 在 hooks debug 输出中增加短期质量采样统计（仅观测，不触发新行为）
+
+## R-0093 检查 research-agent 在外部调研会话后的短期记忆新产出与质量
+
+- 日期: 2026-04-07
+- 目标: 核查 `research-agent` 是否出现新的 short-term memory，并判断其是否满足当前 MVP 短期质量要求
+- 输入:
+  - `agents/research-agent/memory/short-term/*`
+  - `agents/research-agent/runs/*`
+  - 当前短期质量要求（R-0092 + `short-term-feedback.md`）
+- 动作:
+  - 统计 `research-agent` short-term/runs 数量
+  - 读取最新 short-term 事件与对应 run 摘要
+  - 对照 `source_kind`、结构化字段和 `quality` 对象进行判定
+- 发现:
+  - 当前 `research-agent` 已有新产出：`short-term=1`、`runs=1`
+  - 最新事件为 `2026-04-07T02-02-31.553Z-3ba0b2bf-96ea-43d4-a6ab-4112a2303efb.json`
+  - 该事件 `source_kind=direct_input`，`input` 为“挂载当前会话并准备 research 工作流”
+  - 质量对象存在且字段完整：`observable=true`、`linkable=true`、`evaluatable=true`、`distillable=false`、`status=pass`
+  - 结构化会话字段为空：`session_id/workspace_root/assistant_summary=null`，`candidates=[]`
+- 假设:
+  - 该条记录更像手动/直接 `agents run` 输入，而不是来自 hook flush 的会话回填
+- 决策:
+  - 按当前 MVP “短期质量最小要求”判定：该条记录合格（有完整 `quality` 对象且 `status=pass`）
+  - 按“外部调研会话应产生 hook flush 结构化证据”的更高预期判定：当前证据不足（未见 `hook_flush` 结构化字段）
+- 未解问题:
+  - 外部 Claude 调研 session 是否真的触发了本机 hooks->agents 回填路径，还是仅做了手动挂载输入
+- 下一步:
+  - 在该外部会话再触发一次明确的 hook flush 场景后复检：期待 `source_kind=hook_flush` 且含 `session_id/workspace_root/candidates`
+
+## R-0094 基于 vault-global-search 与 Claude Code dream 相关线索设计“扩面采集 + 模型收敛”路径
+
+- 日期: 2026-04-07
+- 目标: 在当前 MVP 阶段讨论如何提升短期记忆采集质量，重点覆盖“扩大上下文采集”与“模型收敛摘要”两条路径
+- 输入:
+  - 用户新增要求：
+    1) hooks 不仅收集直接 input，还要从 Codex 数据库收集更具体上下文
+    2) 上下文扩大后，需要推理模型做收敛和总结
+  - vault-global-search（当前仓库内 Obsidian CLI）检索结果
+  - `docs/portable-agent-contract/dynamic-memory/codex-hooks-memory-registration.md`
+  - `docs/research-memory.md` 中 R-0078/R-0079 对 `oh-my-codex` 的源码级研究记录
+- 动作:
+  - 按 vault-global-search 流程执行 Obsidian CLI 检索（`Claude Code dream` / `ClaudeCode` / `Claude Code`）
+  - 扩展 Top 命中文档，抽取与 `native/derived`、事件信封、容错边界、可观测性相关证据
+  - 基于现有边界推导“短期记忆扩面采集 + 模型收敛”最小可行路径
+- 发现:
+  - Obsidian CLI 在当前仓库对 `Claude Code dream` 无直接命中；`ClaudeCode`/`Claude Code` 的高相关命中集中在：
+    - `docs/portable-agent-contract/relationship-map.md`
+    - `docs/research-memory.md`（R-0078/R-0079）
+    - `docs/portable-agent-contract/dynamic-memory/codex-hooks-memory-registration.md`
+  - R-0078/R-0079 已明确吸收 `oh-my-codex` 的关键经验：`native/derived` 事件区分、统一 envelope、默认关闭 derived、显式开关和可观测性优先
+  - 当前实现已具备 `derived` 开关占位，但尚未产出 derived 事件，也未接入模型摘要链路
+- 假设:
+  - “Codex database” 在当前上下文中可落到两类可观测源：
+    - hooks runtime 可见的 stdin 事件字段（session/thread/turn/tool）
+    - 本地可读取的 Codex 运行痕迹（如 transcript/state/debug artifacts，受环境可见性限制）
+  - 采用“两段式管道”（规则扩面采集 -> 模型收敛）可在不破坏 fail-open 主链路的前提下提升短期记忆质量
+- 决策:
+  - 将后续方案定义为 `MVP+短期质量增强`，不把长期晋升/长期准入重新拉回当前范围
+  - 模型参与限定在 `derived` 层，且默认关闭；`native` 主链路继续纯规则、可回退
+- 未解问题:
+  - Codex 本机可稳定读取的“数据库级”上下文清单需先做可用性探针（字段、路径、大小、权限）
+  - 模型摘要的 token 预算、失败超时和隐私脱敏边界需先冻结
+- 下一步:
+  - 先做 context adapter 的只读探针（不改变现有短期落盘）
+  - 再加 derived summarizer（默认关闭），输出结构化短期候选并记录 `confidence/parser_reason`
+
+## R-0095 评估 short-term 生成策略：在线线程筛选 vs 离线采集过滤
+
+- 日期: 2026-04-07
+- 目标: 在“short-term 必须经推理模型过滤”的前提下，比较两种生成策略并给出建设性建议
+- 输入:
+  - 用户提出两种方案：
+    1) 每次 hook 结束前启动 AI thread 在线筛选并直接落 short-term
+    2) 先沉淀中间采集数据集，再离线过滤转化为 short-term
+  - 当前 hooks 边界：三事件默认链路、fail-open、短期优先
+- 动作:
+  - 从可靠性、延迟、失败影响、可观测性、质量一致性、运维复杂度六个维度对比
+  - 结合当前 MVP 风险偏好提出分阶段建议
+- 发现:
+  - 在线线程筛选优势是“即时可用”，但会把模型时延和失败路径耦合到主交互链路；若处理不当，易影响用户会话稳定性
+  - 离线过滤优势是“可控可回放可重跑”，适合先把质量口径做稳；但短期内记忆有时滞，实时性较弱
+  - 两者并非互斥，更合理的是“双轨”：主链路保持轻量采集，质量生成由异步/离线任务产出
+- 假设:
+  - 若必须立即在线筛选，仍需强制降级策略：模型失败时不阻断会话，并把样本回退到待处理队列
+- 决策:
+  - 推荐先以“中间采集数据集 + 离线过滤”作为主路径，先把质量标准和可观测性跑稳
+  - 在线线程筛选作为可选加速路径，默认关闭，仅在低风险场景灰度
+- 未解问题:
+  - 离线批次频率（按时间/按事件量）与模型预算上限如何设定
+  - 在线模式下的最大超时与重试次数阈值
+- 下一步:
+  - 定义 `raw_capture` 与 `short_term_candidate` 的最小契约字段
+  - 设计统一的质量标签（accept/review/reject）与人工复核入口
+
+## R-0096 按新策略落地 MVP：run 写 raw_capture、distill 产 short-term，并补 AI 环境接入
+
+- 日期: 2026-04-07
+- 目标: 将“hooks 直接产物不是 short-term，short-term 必须经模型过滤”融入 MVP 计划并完成最小实现
+- 输入:
+  - 用户要求：先更新 MVP 计划文档，再落地；并明确 AI agent 环境搭建
+  - 当前代码基：`projects/cli`、`scripts/codex-hooks`
+- 动作:
+  - 更新计划文档：
+    - `plans/mvp/2026-04-01-codex-agent-identity-mvp-plan.md`
+    - `plans/mvp/2026-04-01-agent-identity-and-cli-contract.md`
+    - 明确新链路：`run -> raw_capture`，`distill -> short-term`
+    - 增加 AI 环境变量与 provider 说明（`mock/openai`）
+  - 落地 CLI：
+    - `init` 新增 `memory/raw-capture/`
+    - `run` 改为写 `raw_capture` 事件（不直接写 short-term）
+    - 新增 `distill` 命令：读取 pending raw_capture，调用 provider 过滤，写 short-term
+    - 支持 `OBSIDIAN_AGENT_MEMORY_SERVER_DISTILL_PROVIDER` 与 `OPENAI_API_KEY`
+  - 调整 hooks 相关读取语义：短期摘要读取兼容 `summary` 字段
+  - 先改测试再实现（TDD）：更新 CLI 与 hooks 测试，新增 distill 测试
+- 发现:
+  - 在保持现有 `agents run` 调用面的情况下，切到 raw_capture-first 可最小化对 hooks driver 的冲击
+  - 使用 provider 切换（`mock` 用于回归、`openai` 用于集成验证）可同时满足稳定性与真实过滤需求
+- 假设:
+  - OpenAI `responses` JSON schema 输出在当前运行环境可稳定返回结构化内容；如后续出现输出漂移需增加容错解析
+- 决策:
+  - MVP 当前正式采用两阶段短期链路：采集与过滤解耦
+  - short-term 只接受 `distill` 输出，不接受 hooks 直接原文写入
+- 验证:
+  - `npm --prefix projects/cli test`：12 passed, 0 failed
+  - `node --test --experimental-strip-types scripts/codex-hooks/test/*.test.ts`：24 passed, 0 failed
+- 未解问题:
+  - openai provider 的超时、重试、预算上限仍需在下一轮收敛
+  - distill 失败样本的复跑与人工复核入口尚未定义
+- 下一步:
+  - 增加 distill provider 的超时与错误分类
+  - 固化 `raw_capture` 与 `short-term` 的 schema 版本化文档
+
+## R-0097 实现 distill provider 与 ~/.codex/config.toml 联动
+
+- 日期: 2026-04-07
+- 目标: 让 `OBSIDIAN_AGENT_MEMORY_SERVER_DISTILL_PROVIDER` 与 Codex `config.toml` 联动，默认从 `config.toml` 读取 provider/model
+- 输入:
+  - 用户要求：所有 provider 都配置在 `config.toml`，distill 侧应联动
+  - 当前实现：distill provider 仅读取环境变量
+  - 本机配置样本：`~/.codex/config.toml` 包含 `model_provider` 与 `[model_providers.*]`
+- 动作:
+  - 在 `projects/cli/src/cli.ts` 增加最小 TOML 解析（面向当前字段）
+  - 增加运行时解析优先级：
+    1) `OBSIDIAN_AGENT_MEMORY_SERVER_DISTILL_PROVIDER`（覆盖）
+    2) `~/.codex/config.toml` 的 `model_provider`
+    3) 默认 `mock`
+  - model 解析优先级：
+    1) `OBSIDIAN_AGENT_MEMORY_SERVER_DISTILL_MODEL`
+    2) `config.toml` 的 `model`
+    3) 默认模型名
+  - 读取 provider section：`[model_providers.<provider>]` 的 `base_url` / `wire_api` / `requires_openai_auth`
+  - distill 调用改为 provider-runtime 驱动；当 provider 需要 OpenAI 鉴权时使用 `OPENAI_API_KEY`
+  - 新增测试：`distill provider/model can be resolved from ~/.codex/config.toml`
+  - 同步更新 CLI README 与 MVP 文档中的 AI 环境说明
+- 发现:
+  - 使用 `HOME` 指向临时目录可稳定测试 `~/.codex/config.toml` 联动
+  - 在 `mock` provider 下可完成无网络回归，同时保留真实 provider 的运行时入口
+- 假设:
+  - 当前最小 TOML 解析足以覆盖本项目已用字段；若 `config.toml` 后续出现复杂数组/内联表，可再升级解析器
+- 决策:
+  - distill provider 正式采用“config.toml 默认 + 环境变量覆盖”策略
+- 验证:
+  - `npm --prefix projects/cli test`：13 passed, 0 failed
+  - `node --test --experimental-strip-types scripts/codex-hooks/test/*.test.ts`：24 passed, 0 failed
+- 未解问题:
+  - provider 认证方式除 `requires_openai_auth` 外的更细粒度凭据映射尚未扩展
+- 下一步:
+  - 若接入更多 provider，补充 provider-auth 映射与超时/重试策略
+
+## R-0098 关键步骤提交前验证与提交边界决策
+
+- 日期: 2026-04-07
+- 目标: 落实“关键步骤必须提交”，并在脏工作区中明确本轮提交边界
+- 输入:
+  - 用户明确要求关键步骤需要提交修改
+  - 当前工作区存在大量 `agents/**` 运行产物与 `.DS_Store` 未跟踪文件
+- 动作:
+  - 重新执行验证：
+    - `npm --prefix projects/cli test`
+    - `node --test --experimental-strip-types scripts/codex-hooks/test/*.test.ts`
+  - 确认本轮提交边界：仅提交代码、文档、测试；排除运行时产物
+- 发现:
+  - CLI 测试 `13 passed, 0 failed`
+  - Hooks 测试 `24 passed, 0 failed`
+  - 运行时产物体量大且与实现无关，不应进入关键步骤提交
+- 决策:
+  - 本轮按“功能改动+验证通过”形成关键里程碑 commit
+  - 不把 `agents/**` 与 `.DS_Store` 纳入提交
+- 假设:
+  - 当前新增与修改的 hooks/cli 测试足以覆盖本轮行为变更；更细粒度回归由后续迭代补充

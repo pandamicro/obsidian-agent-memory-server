@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { appendFileSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { createHash } from 'node:crypto';
 import os from 'node:os';
@@ -30,8 +30,8 @@ export type SessionState = {
   last_flush_at?: string;
   seen_events: Record<string, string>;
   pending_feedback: FeedbackEntry[];
-  pending_long_term_candidates: FeedbackEntry[];
   cooldown_turns: number;
+  recent_failures: Record<string, { count: number; last_at: string; reason: string }>;
 };
 
 export function resolveWorkspaceRoot(cwd: string): string {
@@ -68,6 +68,11 @@ export function getSessionStatePath(stateRoot: string, workspaceRoot: string, se
   return join(stateRoot, 'workspaces', workspaceKey(workspaceRoot), 'sessions', `${sessionId}.json`);
 }
 
+export function getHookLogPath(stateRoot: string): string {
+  const day = new Date().toISOString().slice(0, 10);
+  return join(stateRoot, 'logs', `hooks-${day}.jsonl`);
+}
+
 export function getWorkspaceBindingPath(workspaceRoot: string): string {
   return join(workspaceRoot, '.codex', 'agent-memory', 'active-agent.json');
 }
@@ -100,8 +105,8 @@ export function createDefaultSessionState(sessionId: string, workspaceRoot: stri
     workspace_key: workspaceKey(workspaceRoot),
     seen_events: {},
     pending_feedback: [],
-    pending_long_term_candidates: [],
     cooldown_turns: 8,
+    recent_failures: {},
   };
 }
 
@@ -121,7 +126,7 @@ export function loadSessionState(
       workspace_key: workspaceKey(workspaceRoot),
       seen_events: parsed.seen_events ?? {},
       pending_feedback: parsed.pending_feedback ?? [],
-      pending_long_term_candidates: parsed.pending_long_term_candidates ?? [],
+      recent_failures: parsed.recent_failures ?? {},
     };
   } catch (error) {
     const typed = error as NodeJS.ErrnoException;
@@ -144,6 +149,19 @@ export function saveSessionState(
   const tempPath = `${path}.${process.pid}.tmp`;
   writeFileSync(tempPath, `${JSON.stringify(state, null, 2)}\n`, 'utf8');
   renameSync(tempPath, path);
+}
+
+export function appendHookLog(
+  stateRoot: string,
+  payload: Record<string, unknown>,
+): void {
+  const path = getHookLogPath(stateRoot);
+  ensureParentDir(path);
+  try {
+    appendFileSync(path, `${JSON.stringify({ timestamp: new Date().toISOString(), ...payload })}\n`, 'utf8');
+  } catch {
+    // best-effort logging only
+  }
 }
 
 export function rememberEvent(state: SessionState, eventKey: string): boolean {
@@ -170,18 +188,6 @@ export function addPendingFeedback(state: SessionState, entry: FeedbackEntry): v
   state.pending_feedback.push(entry);
 }
 
-export function addPendingLongTermCandidate(state: SessionState, entry: FeedbackEntry): void {
-  if (state.pending_long_term_candidates.some((current) => current.feedback_id === entry.feedback_id)) {
-    return;
-  }
-
-  state.pending_long_term_candidates.push(entry);
-}
-
-export function clearPendingLongTermCandidates(state: SessionState): void {
-  state.pending_long_term_candidates = [];
-}
-
 export function updateLastFlush(state: SessionState): void {
   state.last_flush_at = new Date().toISOString();
 }
@@ -194,6 +200,37 @@ export function markAgentId(state: SessionState, agentId: string): void {
 export function markIdentitySelectionDeclined(state: SessionState): void {
   delete state.agent_id;
   state.identity_selection_declined = true;
+}
+
+export function trackFailure(
+  state: SessionState,
+  key: string,
+  reason: string,
+  now = new Date(),
+  suppressAfter = 1,
+): { count: number; suppressed: boolean } {
+  const at = now.toISOString();
+  const current = state.recent_failures[key];
+  const count = (current?.count ?? 0) + 1;
+  state.recent_failures[key] = { count, last_at: at, reason };
+
+  const entries = Object.entries(state.recent_failures);
+  if (entries.length > 200) {
+    const sorted = entries.sort((a, b) => a[1].last_at.localeCompare(b[1].last_at));
+    const keep = sorted.slice(-200);
+    state.recent_failures = Object.fromEntries(keep);
+  }
+
+  return {
+    count,
+    suppressed: count > suppressAfter,
+  };
+}
+
+export function clearFailure(state: SessionState, key: string): void {
+  if (state.recent_failures[key]) {
+    delete state.recent_failures[key];
+  }
 }
 
 export function readWorkspaceBinding(workspaceRoot: string, stateRoot: string): string | null {

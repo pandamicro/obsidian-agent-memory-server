@@ -46,6 +46,22 @@
 - `evaluatable`
 - `distillable`
 
+## MVP 质量要求（短期记忆专用）
+
+当前 MVP 只约束短期记忆质量，不做长期记忆准入判断。
+
+最小要求：
+
+- 每条短期事件必须携带 `source_kind`
+- 若来源为 hook flush，必须尽量结构化提取 `session_id`、`assistant_summary`、`candidates[]`
+- 每条短期事件必须包含 `quality` 对象，并至少给出：
+  - `observable`
+  - `linkable`
+  - `evaluatable`
+  - `distillable`
+  - `status`
+- `status` 仅用于短期采集质量分层（如 `pass` / `needs_review`），不触发长期晋升
+
 ## feedback aggregation（第一阶段）
 
 目标是形成方向判断，而不是精确打分。

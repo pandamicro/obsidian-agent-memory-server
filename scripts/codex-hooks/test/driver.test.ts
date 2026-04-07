@@ -5,13 +5,35 @@ import { join } from 'node:path';
 import test from 'node:test';
 
 import { createMemoryHookDriver } from '../driver.ts';
+import { getHookLogPath } from '../state.ts';
 import { bindAgent, repoRoot, spawnAgents } from './helpers.ts';
+
+async function countLongTermFiles(sharedRoot: string): Promise<number> {
+  try {
+    const files = await readdir(join(sharedRoot, 'agents', 'research-agent', 'memory', 'long-term'));
+    return files.length;
+  } catch (error) {
+    const typed = error as NodeJS.ErrnoException;
+    if (typed.code === 'ENOENT') {
+      return 0;
+    }
+    throw error;
+  }
+}
 
 async function setupSharedAgent() {
   const sharedRoot = await mkdtemp(join(tmpdir(), 'codex-hooks-shared-'));
   assert.equal(spawnAgents(['init', '--agent-id', 'research-agent'], sharedRoot).status, 0);
   assert.equal(
     spawnAgents(['run', '--agent-id', 'research-agent', '--input', 'remember the contract rules'], sharedRoot).status,
+    0,
+  );
+  assert.equal(
+    spawnAgents(
+      ['distill', '--agent-id', 'research-agent', '--limit', '10'],
+      sharedRoot,
+      { OBSIDIAN_AGENT_MEMORY_SERVER_DISTILL_PROVIDER: 'mock' },
+    ).status,
     0,
   );
   return sharedRoot;
@@ -25,11 +47,19 @@ async function setupSharedAgents(agentIds: string[]) {
       spawnAgents(['run', '--agent-id', agentId, '--input', `seed memory for ${agentId}`], sharedRoot).status,
       0,
     );
+    assert.equal(
+      spawnAgents(
+        ['distill', '--agent-id', agentId, '--limit', '10'],
+        sharedRoot,
+        { OBSIDIAN_AGENT_MEMORY_SERVER_DISTILL_PROVIDER: 'mock' },
+      ).status,
+      0,
+    );
   }
   return sharedRoot;
 }
 
-test('SessionStart loads the latest long-term summary', async () => {
+test('SessionStart loads the latest short-term summary', async () => {
   const sharedRoot = await setupSharedAgent();
   const workspaceRoot = await mkdtemp(join(tmpdir(), 'codex-hooks-workspace-'));
   await bindAgent(workspaceRoot, 'research-agent');
@@ -76,7 +106,7 @@ test('UserPromptSubmit refreshes memory on task-like prompts', async () => {
 
   assert.ok(response);
   assert.match(response?.hookSpecificOutput?.additionalContext ?? '', /research-agent/);
-  assert.match(response?.hookSpecificOutput?.additionalContext ?? '', /Latest long-term ref:/);
+  assert.match(response?.hookSpecificOutput?.additionalContext ?? '', /Latest short-term ref:/);
 });
 
 test('SessionStart stays inert when no explicit agent binding exists', async () => {
@@ -96,10 +126,7 @@ test('SessionStart stays inert when no explicit agent binding exists', async () 
     source: 'startup',
   });
 
-  assert.ok(response);
-  assert.match(response?.systemMessage ?? '', /choose an agent identity/i);
-  assert.match(response?.systemMessage ?? '', /0\. no identity/i);
-  assert.match(response?.systemMessage ?? '', /not applicable agent identity/i);
+  assert.equal(response, null);
 });
 
 test('UserPromptSubmit binds selected identity and keeps the remaining task in-band', async () => {
@@ -159,7 +186,52 @@ test('UserPromptSubmit accepts explicit no identity and keeps later turns inert'
   assert.equal(laterPrompt, null);
 });
 
-test('Stop flushes pending candidates into the shared long-term store', async () => {
+test('UserPromptSubmit auto-mounts when strict specialization match is unique', async () => {
+  const sharedRoot = await setupSharedAgents(['research-agent', 'unity-optimization-agent']);
+  const workspaceRoot = await mkdtemp(join(tmpdir(), 'codex-hooks-auto-match-workspace-'));
+  const stateRoot = await mkdtemp(join(tmpdir(), 'codex-hooks-auto-match-state-'));
+  const driver = createMemoryHookDriver({
+    sourceRepoRoot: repoRoot,
+    sharedRoot,
+    stateRoot,
+  });
+
+  const response = driver.handleUserPromptSubmit({
+    hook_event_name: 'UserPromptSubmit',
+    session_id: 'session-auto-match',
+    turn_id: 'turn-auto-match',
+    cwd: workspaceRoot,
+    prompt: 'Please investigate and research evidence for the best approach',
+  });
+
+  assert.ok(response);
+  assert.match(response?.systemMessage ?? '', /auto-mounted identity research-agent/i);
+  assert.match(response?.hookSpecificOutput?.additionalContext ?? '', /Mounted identity: research-agent/);
+  assert.match(response?.hookSpecificOutput?.additionalContext ?? '', /strict match/i);
+});
+
+test('UserPromptSubmit keeps no-mount when strict match is ambiguous', async () => {
+  const sharedRoot = await setupSharedAgents(['research-agent', 'unity-optimization-agent']);
+  const workspaceRoot = await mkdtemp(join(tmpdir(), 'codex-hooks-auto-ambiguous-workspace-'));
+  const stateRoot = await mkdtemp(join(tmpdir(), 'codex-hooks-auto-ambiguous-state-'));
+  const driver = createMemoryHookDriver({
+    sourceRepoRoot: repoRoot,
+    sharedRoot,
+    stateRoot,
+  });
+
+  const response = driver.handleUserPromptSubmit({
+    hook_event_name: 'UserPromptSubmit',
+    session_id: 'session-auto-ambiguous',
+    turn_id: 'turn-auto-ambiguous',
+    cwd: workspaceRoot,
+    prompt: 'Need research on Unity profiler GC allocation spikes and optimization options',
+  });
+
+  assert.equal(response, null);
+});
+
+test('Stop remains short-term-only and does not write long-term objects', async () => {
   const sharedRoot = await setupSharedAgent();
   const workspaceRoot = await mkdtemp(join(tmpdir(), 'codex-hooks-workspace-'));
   await bindAgent(workspaceRoot, 'research-agent');
@@ -171,7 +243,7 @@ test('Stop flushes pending candidates into the shared long-term store', async ()
     stateRoot,
   });
 
-  const beforeFiles = await readdir(join(sharedRoot, 'agents', 'research-agent', 'memory', 'long-term'));
+  const beforeFileCount = await countLongTermFiles(sharedRoot);
 
   const postResponse = driver.handlePostToolUse({
     hook_event_name: 'PostToolUse',
@@ -196,8 +268,8 @@ test('Stop flushes pending candidates into the shared long-term store', async ()
 
   assert.equal(stopResponse.continue, true);
 
-  const afterFiles = await readdir(join(sharedRoot, 'agents', 'research-agent', 'memory', 'long-term'));
-  assert.equal(afterFiles.length, beforeFiles.length + 1);
+  const afterFileCount = await countLongTermFiles(sharedRoot);
+  assert.equal(afterFileCount, beforeFileCount);
 });
 
 test('duplicate hook events are ignored after the first processing pass', async () => {
@@ -228,4 +300,67 @@ test('duplicate hook events are ignored after the first processing pass', async 
 
   assert.ok(first);
   assert.equal(second, null);
+});
+
+test('same event/session/turn is deduped even when tool_use_id differs', async () => {
+  const sharedRoot = await setupSharedAgent();
+  const workspaceRoot = await mkdtemp(join(tmpdir(), 'codex-hooks-workspace-dedupe-turn-'));
+  await bindAgent(workspaceRoot, 'research-agent');
+
+  const stateRoot = await mkdtemp(join(tmpdir(), 'codex-hooks-state-dedupe-turn-'));
+  const driver = createMemoryHookDriver({
+    sourceRepoRoot: repoRoot,
+    sharedRoot,
+    stateRoot,
+  });
+
+  const first = driver.handlePostToolUse({
+    hook_event_name: 'PostToolUse',
+    session_id: 'session-dedupe-turn',
+    turn_id: 'turn-9',
+    tool_name: 'Bash',
+    tool_use_id: 'tool-a',
+    cwd: workspaceRoot,
+    tool_input: { command: 'echo first' },
+    tool_response: 'ok',
+  });
+
+  const second = driver.handlePostToolUse({
+    hook_event_name: 'PostToolUse',
+    session_id: 'session-dedupe-turn',
+    turn_id: 'turn-9',
+    tool_name: 'Bash',
+    tool_use_id: 'tool-b',
+    cwd: workspaceRoot,
+    tool_input: { command: 'echo second' },
+    tool_response: 'ok',
+  });
+
+  assert.ok(first);
+  assert.equal(second, null);
+});
+
+test('SessionStart emits machine-level observability log entries', async () => {
+  const sharedRoot = await setupSharedAgent();
+  const workspaceRoot = await mkdtemp(join(tmpdir(), 'codex-hooks-log-workspace-'));
+  await bindAgent(workspaceRoot, 'research-agent');
+
+  const stateRoot = await mkdtemp(join(tmpdir(), 'codex-hooks-log-state-'));
+  const driver = createMemoryHookDriver({
+    sourceRepoRoot: repoRoot,
+    sharedRoot,
+    stateRoot,
+  });
+
+  const response = driver.handleSessionStart({
+    hook_event_name: 'SessionStart',
+    session_id: 'session-log',
+    cwd: workspaceRoot,
+    source: 'startup',
+  });
+
+  assert.ok(response);
+  const content = await readFile(getHookLogPath(stateRoot), 'utf8');
+  assert.match(content, /"event":"session-start"/);
+  assert.match(content, /"phase":"received"/);
 });

@@ -10,10 +10,11 @@ const cliPath = resolve(fileURLToPath(new URL('../src/cli.ts', import.meta.url))
 const launcherPath = resolve(fileURLToPath(new URL('../../../bin/agents', import.meta.url)));
 const repoBindingPath = resolve(fileURLToPath(new URL('../../../.codex/agent-memory/active-agent.json', import.meta.url)));
 
-async function runCli(args: string[], cwd: string, stdinText?: string) {
+async function runCli(args: string[], cwd: string, stdinText?: string, env: NodeJS.ProcessEnv = {}) {
   return new Promise<{ code: number | null; stdout: string; stderr: string }>((resolvePromise) => {
     const child = spawn(process.execPath, ['--experimental-strip-types', cliPath, ...args], {
       cwd,
+      env: { ...process.env, ...env },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
 
@@ -104,11 +105,11 @@ test('init creates agent directories and agent_identity.json', async () => {
   assert.match(identity.mission, /research/i);
   assert.equal(identity.lineage, 'origin:research-agent:v1');
 
-  assert.deepEqual((await readdir(join(agentRoot, 'memory'))).sort(), ['long-term', 'short-term']);
+  assert.deepEqual((await readdir(join(agentRoot, 'memory'))).sort(), ['raw-capture', 'short-term']);
   assert.deepEqual(await readdir(join(agentRoot, 'runs')), []);
 });
 
-test('run writes short-term event, long-term placeholder, and run summary', async () => {
+test('run writes raw-capture event and run summary', async () => {
   const workspaceRoot = await mkdtemp(join(tmpdir(), 'agent-cli-run-'));
 
   const initResult = await runCli(['init', '--agent-id', 'research-agent'], workspaceRoot);
@@ -122,32 +123,29 @@ test('run writes short-term event, long-term placeholder, and run summary', asyn
   assert.equal(runResult.code, 0);
 
   const agentRoot = join(workspaceRoot, 'agents', 'research-agent');
+  const rawCaptureFiles = await readdir(join(agentRoot, 'memory', 'raw-capture'));
   const shortTermFiles = await readdir(join(agentRoot, 'memory', 'short-term'));
-  const longTermFiles = await readdir(join(agentRoot, 'memory', 'long-term'));
   const runFiles = await readdir(join(agentRoot, 'runs'));
 
-  assert.equal(shortTermFiles.length, 1);
-  assert.equal(longTermFiles.length, 1);
+  assert.equal(rawCaptureFiles.length, 1);
+  assert.equal(shortTermFiles.length, 0);
   assert.equal(runFiles.length, 1);
 
-  const shortTermEvent = JSON.parse(
-    await readFile(join(agentRoot, 'memory', 'short-term', shortTermFiles[0]!), 'utf8'),
-  );
-  const longTermObject = JSON.parse(
-    await readFile(join(agentRoot, 'memory', 'long-term', longTermFiles[0]!), 'utf8'),
+  const rawCaptureEvent = JSON.parse(
+    await readFile(join(agentRoot, 'memory', 'raw-capture', rawCaptureFiles[0]!), 'utf8'),
   );
   const runSummary = JSON.parse(await readFile(join(agentRoot, 'runs', runFiles[0]!), 'utf8'));
 
-  assert.equal(shortTermEvent.identity_id, 'research-agent');
-  assert.equal(shortTermEvent.event_type, 'captured');
-  assert.equal(shortTermEvent.object_kind, 'episode');
-  assert.equal(longTermObject.identity_id, 'research-agent');
-  assert.equal(longTermObject.source_message_id, shortTermEvent.message_id);
+  assert.equal(rawCaptureEvent.schema_version, '1');
+  assert.equal(rawCaptureEvent.identity_id, 'research-agent');
+  assert.equal(rawCaptureEvent.event_type, 'captured');
+  assert.equal(rawCaptureEvent.object_kind, 'raw_capture');
+  assert.equal(rawCaptureEvent.source_kind, 'direct_input');
   assert.equal(runSummary.agent_id, 'research-agent');
-  assert.equal(runSummary.latest_long_term_ref, longTermObject.object_ref);
+  assert.equal(runSummary.raw_capture_count, 1);
 });
 
-test('verify checks structure and reads latest long-term object', async () => {
+test('verify checks structure and reads latest short-term event', async () => {
   const workspaceRoot = await mkdtemp(join(tmpdir(), 'agent-cli-verify-'));
 
   assert.equal((await runCli(['init', '--agent-id', 'research-agent'], workspaceRoot)).code, 0);
@@ -163,7 +161,7 @@ test('verify checks structure and reads latest long-term object', async () => {
 
   assert.equal(verifyResult.code, 0);
   assert.match(verifyResult.stdout, /research-agent/);
-  assert.match(verifyResult.stdout, /long-term:/);
+  assert.match(verifyResult.stdout, /Latest short-term ref: <none>/);
 });
 
 test('run fails with init guidance when agent identity is missing', async () => {
@@ -210,8 +208,120 @@ test('launcher writes into the shared root and leaves the caller workspace untou
 
   assert.equal(runResult.code, 0);
   assert.deepEqual(await readdir(join(workspaceRoot)), []);
-  assert.equal((await readdir(join(agentRoot, 'memory', 'short-term'))).length, 1);
-  assert.equal((await readdir(join(agentRoot, 'memory', 'long-term'))).length, 1);
+  assert.equal((await readdir(join(agentRoot, 'memory', 'raw-capture'))).length, 1);
+  assert.equal((await readdir(join(agentRoot, 'memory', 'short-term'))).length, 0);
+});
+
+test('run parses hook flush candidates into structured raw-capture fields', async () => {
+  const workspaceRoot = await mkdtemp(join(tmpdir(), 'agent-cli-hook-flush-'));
+
+  const initResult = await runCli(['init', '--agent-id', 'research-agent'], workspaceRoot);
+  assert.equal(initResult.code, 0);
+
+  const flushInput = [
+    '[hook flush] session=session-xyz',
+    'agent=research-agent',
+    `workspace=${workspaceRoot}`,
+    'assistant=handled task',
+    'candidates:',
+    '- environmental_outcome/supporting: Bash result captured [turn:t-1, tool-use:tu-1]',
+  ].join('\n');
+
+  const runResult = await runCli(
+    ['run', '--agent-id', 'research-agent', '--input', flushInput],
+    workspaceRoot,
+  );
+
+  assert.equal(runResult.code, 0);
+
+  const agentRoot = join(workspaceRoot, 'agents', 'research-agent');
+  const rawFiles = await readdir(join(agentRoot, 'memory', 'raw-capture'));
+  assert.equal(rawFiles.length, 1);
+  const rawEvent = JSON.parse(
+    await readFile(join(agentRoot, 'memory', 'raw-capture', rawFiles[0]!), 'utf8'),
+  );
+
+  assert.equal(rawEvent.source_kind, 'hook_flush');
+  assert.equal(rawEvent.session_id, 'session-xyz');
+  assert.equal(rawEvent.assistant_summary, 'handled task');
+  assert.equal(rawEvent.candidates.length, 1);
+  assert.equal(rawEvent.candidates[0].signal_type, 'environmental_outcome');
+  assert.equal(rawEvent.candidates[0].polarity, 'supporting');
+  assert.deepEqual(rawEvent.candidates[0].evidence_refs, ['turn:t-1', 'tool-use:tu-1']);
+});
+
+test('distill converts pending raw-capture records into short-term memory via mock model', async () => {
+  const workspaceRoot = await mkdtemp(join(tmpdir(), 'agent-cli-distill-'));
+  assert.equal((await runCli(['init', '--agent-id', 'research-agent'], workspaceRoot)).code, 0);
+
+  assert.equal(
+    (
+      await runCli(
+        ['run', '--agent-id', 'research-agent', '--input', '[hook flush] session=s1\nassistant=done\ncandidates:\n- environmental_outcome/supporting: Bash ok [turn:t1]'],
+        workspaceRoot,
+      )
+    ).code,
+    0,
+  );
+
+  const distillResult = await runCli(
+    ['distill', '--agent-id', 'research-agent', '--limit', '10'],
+    workspaceRoot,
+    undefined,
+    { OBSIDIAN_AGENT_MEMORY_SERVER_DISTILL_PROVIDER: 'mock' },
+  );
+  assert.equal(distillResult.code, 0);
+  assert.match(distillResult.stdout, /Distilled short-term records: 1/);
+
+  const agentRoot = join(workspaceRoot, 'agents', 'research-agent');
+  const shortTermFiles = await readdir(join(agentRoot, 'memory', 'short-term'));
+  assert.equal(shortTermFiles.length, 1);
+  const shortTerm = JSON.parse(await readFile(join(agentRoot, 'memory', 'short-term', shortTermFiles[0]!), 'utf8'));
+  assert.equal(shortTerm.filtered_by_model, true);
+  assert.equal(shortTerm.identity_id, 'research-agent');
+  assert.equal(shortTerm.source_message_id?.length > 0, true);
+});
+
+test('distill provider/model can be resolved from ~/.codex/config.toml', async () => {
+  const workspaceRoot = await mkdtemp(join(tmpdir(), 'agent-cli-distill-config-'));
+  const fakeHome = await mkdtemp(join(tmpdir(), 'agent-cli-home-'));
+  const codexDir = join(fakeHome, '.codex');
+  await mkdir(codexDir, { recursive: true });
+  await writeFile(
+    join(codexDir, 'config.toml'),
+    [
+      'model = "mock-model-from-config"',
+      'model_provider = "mock"',
+      '',
+    ].join('\n'),
+    'utf8',
+  );
+
+  assert.equal((await runCli(['init', '--agent-id', 'research-agent'], workspaceRoot)).code, 0);
+  assert.equal(
+    (
+      await runCli(
+        ['run', '--agent-id', 'research-agent', '--input', 'capture for config provider test'],
+        workspaceRoot,
+      )
+    ).code,
+    0,
+  );
+
+  const distillResult = await runCli(
+    ['distill', '--agent-id', 'research-agent', '--limit', '10'],
+    workspaceRoot,
+    undefined,
+    { HOME: fakeHome },
+  );
+  assert.equal(distillResult.code, 0);
+
+  const agentRoot = join(workspaceRoot, 'agents', 'research-agent');
+  const shortTermFiles = await readdir(join(agentRoot, 'memory', 'short-term'));
+  assert.equal(shortTermFiles.length, 1);
+  const shortTerm = JSON.parse(await readFile(join(agentRoot, 'memory', 'short-term', shortTermFiles[0]!), 'utf8'));
+  assert.equal(shortTerm.model_provider, 'mock');
+  assert.equal(shortTerm.model_name, 'mock-model-from-config');
 });
 
 test('launcher list discovers shared agents from another workspace', async () => {

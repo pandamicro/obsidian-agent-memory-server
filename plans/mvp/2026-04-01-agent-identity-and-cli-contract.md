@@ -1,5 +1,7 @@
 # Codex Agent Identity JSON 与 CLI 最小协议
 
+> 2026-04-06 更新注记：当前 MVP 只要求短期记忆采集质量达标；长期记忆写入与长期准入判断暂不启用。
+
 ## 目标
 
 定义 Codex `agent_identity` MVP 第一版所需的两个最小契约：
@@ -117,7 +119,6 @@ Codex
   -> CLI
   -> agent_identity.json
   -> short-term memory files
-  -> long-term memory files
   -> run summary
 ```
 
@@ -163,9 +164,8 @@ pnpm tsx src/cli.ts verify --agent-id research-agent
 4. CLI 读取 `agents/<agent_id>/identity/agent_identity.json`
 5. CLI 用该身份执行一次最小链路
 6. CLI 写短期记忆事件
-7. CLI 写长期记忆占位对象
-8. CLI 输出运行摘要并落盘
-9. Codex 如需检查结果，再调用 `verify`
+7. CLI 输出短期记忆质量摘要并落盘
+8. Codex 如需检查结果，再调用 `verify`
 
 ### 未来演化方式
 
@@ -192,8 +192,8 @@ Codex
 - 加载 `agent_identity.json`
 - 接收一次最小输入
 - 写一条短期记忆事件
-- 生成一个长期记忆占位对象
-- 回读最新长期对象
+- 给短期记忆附加最小质量元数据
+- 回读最新短期事件
 - 输出和保存本次运行摘要
 - 校验目录结构和最小文件有效性
 
@@ -267,7 +267,7 @@ pnpm tsx src/cli.ts verify --agent-id research-agent
 
 - 初始化一个实验性 Agent 的本地目录骨架
 - 写入最小 `agent_identity.json`
-- 创建短期记忆、长期记忆和运行摘要目录
+- 创建 `raw-capture`、`short-term` 与运行摘要目录
 
 建议调用：
 
@@ -301,9 +301,7 @@ pnpm tsx src/cli.ts init --agent-id research-agent
 
 - 加载 `agent_identity.json`
 - 接收一次最小输入
-- 写入一条短期记忆事件
-- 生成一个长期记忆占位对象
-- 回读最新长期对象
+- 写入一条 `raw_capture` 采集事件
 - 输出运行摘要
 
 建议调用：
@@ -321,28 +319,23 @@ pnpm tsx src/cli.ts run --agent-id research-agent --input "summarize current con
 
 1. 校验目标 Agent 目录存在
 2. 读取 `agent_identity.json`
-3. 生成短期事件
-4. 写入短期目录
-5. 生成长期占位对象
-6. 写入长期目录
-7. 回读最新长期对象
+3. 生成 raw-capture 事件
+4. 写入 `memory/raw-capture/`
+5. 不生成 short-term（仅采集）
 8. 写入本次运行摘要到 `runs/`
 9. 输出控制台摘要
 
 最小输出：
 
 - `agent_id`
-- 本次生成的短期事件路径
-- 本次生成的长期对象路径
-- 回读到的长期对象 ID 或文件名
+- 本次生成的 raw-capture 事件路径
 
 使用说明：
 
 - 这是第一版 CLI 的主命令
-- 它对应 session 内的一次执行
+- 它对应 session 内的一次原始采集
 - 每次调用只处理一次输入
-- 每次调用都应生成新的短期事件和新的运行摘要
-- 长期记忆可以是占位对象，不要求真实高质量蒸馏
+- 每次调用都应生成新的 raw-capture 事件和新的运行摘要
 - 如果身份文件不存在，应报错并提示先执行 `init`
 
 失败条件：
@@ -352,14 +345,47 @@ pnpm tsx src/cli.ts run --agent-id research-agent --input "summarize current con
 - 字段缺失
 - 写文件失败
 
-### 命令 3：`verify`
+### 命令 3：`distill`
+
+作用：
+
+- 从 `raw-capture` 读取待处理记录
+- 使用推理模型做过滤与收敛
+- 仅把通过过滤的记录写入 `short-term`
+- 输出本轮 distill 摘要
+
+建议调用：
+
+```bash
+pnpm tsx src/cli.ts distill --agent-id research-agent --limit 20
+```
+
+最小参数：
+
+- `--agent-id`
+- `--limit`（可选，默认 20）
+
+最小输出：
+
+- 本轮扫描条数
+- 本轮写入 short-term 条数
+- 本轮跳过条数
+
+AI 环境要求（MVP）：
+
+- 默认从 `~/.codex/config.toml` 读取 `model_provider` 与 `model`
+- `OBSIDIAN_AGENT_MEMORY_SERVER_DISTILL_PROVIDER` 可覆盖 config.toml
+- 当 provider 要求 OpenAI 鉴权时需设置 `OPENAI_API_KEY`
+- 可选模型变量：`OBSIDIAN_AGENT_MEMORY_SERVER_DISTILL_MODEL`
+
+### 命令 4：`verify`
 
 作用：
 
 - 校验 Agent 目录结构是否完整
 - 校验 `agent_identity.json` 是否有效
-- 校验短期目录、长期目录、运行摘要目录是否存在
-- 可选读取最新长期对象做最小回读验证
+- 校验 `raw-capture`、`short-term`、运行摘要目录是否存在
+- 可选读取最新 short-term 做最小回读验证
 
 建议调用：
 
@@ -375,7 +401,7 @@ pnpm tsx src/cli.ts verify --agent-id research-agent
 
 - 目录检查结果
 - 身份文件检查结果
-- 最新长期对象回读结果
+- 最新 short-term 回读结果
 
 使用说明：
 
@@ -398,10 +424,15 @@ pnpm tsx src/cli.ts verify --agent-id research-agent
 
 ### `run` 负责
 
-- session 内一次完整链路执行
-- 短期写入
-- 长期落点
+- session 内一次原始采集执行
+- raw-capture 写入
 - 摘要输出
+
+### `distill` 负责
+
+- 离线过滤与模型收敛
+- short-term 写入
+- 过滤统计输出
 
 ### `verify` 负责
 
@@ -412,6 +443,8 @@ pnpm tsx src/cli.ts verify --agent-id research-agent
 ### 命令不应互相替代的边界
 
 - `init` 不负责写入短期或长期记忆
+- `run` 不负责 short-term 过滤生成
+- `distill` 不负责首次身份资产生成
 - `run` 不负责首次身份资产生成
 - `verify` 不负责修复目录或补写文件
 - `init` 不应被设计成“每个 session 先做一次”的步骤
@@ -424,8 +457,8 @@ agents/
     identity/
       agent_identity.json
     memory/
+      raw-capture/
       short-term/
-      long-term/
     runs/
 ```
 
@@ -449,14 +482,14 @@ agents/
 
 - `agent_identity.json` 使用 JSON
 - 五个最小身份字段
-- CLI 采用 `init / run / verify`
+- CLI 采用 `init / run / distill / verify`
 - `run` 作为主入口
+- `distill` 作为 short-term 生成入口
 
 ## 七、当前暂不冻结项
 
 - 是否增加 `--root` 参数支持自定义根目录
 - 是否增加 `--force` 覆盖初始化
-- 长期记忆占位对象的最终字段结构
 - `verify` 是否细分为更严格的模式
 
 ## 下一步

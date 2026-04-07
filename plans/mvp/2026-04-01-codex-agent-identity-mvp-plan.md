@@ -1,8 +1,10 @@
 # Codex Agent Identity MVP Plan
 
-**Goal:** 定义并实现一个面向 Codex 环境的实验性 `agent_identity` 可运行原型，用单进程、文件优先的极简方式串起身份加载、短期记忆写入、长期记忆落点与最小验证闭环。
+> 2026-04-06 更新注记：MVP 当前阶段临时冻结长期记忆写入与长期准入判断，聚焦短期记忆采集质量。
 
-**Architecture:** MVP 采用 `文件优先单进程`。一个本地进程负责加载 `agent_identity` 资产文件，接收最小输入，写入短期记忆事件，执行一个极简蒸馏步骤，并把结果落到长期记忆目录；所有状态以本地文件保存，优先保证链路清晰、目录边界明确、验证路径稳定。
+**Goal:** 定义并实现一个面向 Codex 环境的实验性 `agent_identity` 可运行原型，用单进程、文件优先的极简方式串起身份加载、短期记忆写入与最小验证闭环。
+
+**Architecture:** MVP 采用 `文件优先单进程`。一个本地进程负责加载 `agent_identity` 资产文件，接收最小输入，写入短期记忆事件并附带质量元数据；所有状态以本地文件保存，优先保证链路清晰、目录边界明确、验证路径稳定。
 
 当前 Codex 接入方式：
 
@@ -29,19 +31,36 @@
 1. 存在一个最小 `agent_identity` 文件，能被原型进程加载
 2. 原型进程能接收一次最小输入并生成一条短期记忆事件
 3. 原型进程能把短期记忆写入专用目录
-4. 原型进程能执行一次极简长期记忆落点动作
-5. 原型进程能从长期记忆目录读回一个结果或占位结果
-6. 存在可重复运行的验证命令，证明整条链路可用
+4. 原型进程能对短期事件给出最小质量判定
+5. 存在可重复运行的验证命令，证明整条链路可用
 
 ## MVP Non-Goals
 
 - 不实现完整身份治理
 - 不实现身份自动比对算法
 - 不实现真实高质量蒸馏
+- 当前阶段不写入长期记忆对象
 - 不实现复杂长期检索排序
 - 不实现多 Agent 协作
 - 不实现跨环境同步
 - 不实现 Obsidian 深度集成
+
+## AI Environment Setup（MVP）
+
+为保证 short-term 经过推理模型过滤，MVP 采用可切换 provider：
+
+- 默认从 `~/.codex/config.toml` 读取：`model_provider`、`model`
+- `OBSIDIAN_AGENT_MEMORY_SERVER_DISTILL_PROVIDER` 作为显式覆盖
+- `mock`：本地可测路径（默认开发回归）
+- 配置中的 provider（如 `openai`/`codex`）走对应 `model_providers.<id>.base_url` 与 `wire_api`
+- `OPENAI_API_KEY`：当 provider 要求 OpenAI 鉴权时必填
+- `OBSIDIAN_AGENT_MEMORY_SERVER_DISTILL_MODEL`：可选，默认使用仓库约定模型名
+
+运行建议：
+
+1. 开发与 CI 默认使用 `mock`，保证稳定回归
+2. 集成验证使用 `openai`，验证真实过滤质量
+3. 无 API Key 或模型失败时保持 fail-open，不阻断 raw capture 写入
 
 ## CLI Boundary Reference
 
@@ -58,9 +77,8 @@ CLI 的详细功能边界、命令职责和使用说明，统一以：
 - 一个 CLI 驱动的短生命周期本地进程
 - 启动时加载已存在的 `agent_identity`
 - 处理单次输入
-- 写入短期记忆事件文件
-- 执行一次极简蒸馏或复制式晋升
-- 写入长期记忆文件
+- 写入 `raw_capture` 事件文件
+- 通过 `distill` 过滤并写入 short-term
 - 输出本次运行摘要
 
 补充约束：
@@ -83,8 +101,8 @@ CLI 的详细功能边界、命令职责和使用说明，统一以：
 plans/mvp/
 runtime/
 agents/<agent_id>/identity/
+agents/<agent_id>/memory/raw-capture/
 agents/<agent_id>/memory/short-term/
-agents/<agent_id>/memory/long-term/
 agents/<agent_id>/runs/
 ```
 
@@ -92,10 +110,10 @@ agents/<agent_id>/runs/
 
 - `agents/<agent_id>/identity/`
   - 放 `agent_identity` 资产文件
+- `agents/<agent_id>/memory/raw-capture/`
+  - 放 hooks/CLI 采集到的原始候选数据
 - `agents/<agent_id>/memory/short-term/`
-  - 放短期记忆事件文件
-- `agents/<agent_id>/memory/long-term/`
-  - 放长期记忆对象或占位对象
+  - 放经 AI 过滤后的 short-term 事件文件
 - `agents/<agent_id>/runs/`
   - 放每次运行的输入、输出和验证快照
 
@@ -117,9 +135,9 @@ agents/<agent_id>/runs/
 - 字段可校验存在
 - 加载失败时明确报错
 
-### 2. 短期记忆
+### 2. 短期记忆（过滤后）
 
-第一版只要求能写一条最小公共信封事件。
+第一版要求 short-term 必须来自过滤流程，不能直接由 hooks 原样落盘。
 
 必填字段：
 
@@ -135,28 +153,19 @@ agents/<agent_id>/runs/
 
 - `target_ref`
 
-第一版不要求：
+新增要求：
 
-- 复杂反馈聚合
-- 完整状态机
-- 检索优化
+- hooks `run` 只写 `raw_capture`
+- `distill` 命令使用推理模型将 `raw_capture` 转换为 short-term
+- short-term 必须携带 `filtered_by_model` 与模型来源元数据
 
-### 3. 长期记忆
+### 3. 当前冻结项（长期记忆）
 
-第一版只要求生成一个“长期记忆占位对象”或极简对象。
+MVP 当前阶段冻结长期记忆写入：
 
-最低要求：
-
-- 能从短期记忆输入生成一个长期目录下的文件
-- 文件里至少保留：
-  - 来源事件引用
-  - 生成时间
-  - 极简摘要或占位结论
-
-第一版允许：
-
-- 直接把短期事件转写为长期占位对象
-- 不要求真实高质量 `Learning / Behavior Delta`
+- 不做长期记忆准入判定
+- 不写入长期记忆对象
+- 不将短期事件自动晋升到长期层
 
 ## Minimal Process Lifecycle
 
@@ -166,12 +175,11 @@ agents/<agent_id>/runs/
 2. 加载已初始化的 `agent_identity`
 3. 校验运行所需目录和文件是否存在
 4. 接收一次最小输入
-5. 生成一条短期记忆公共信封事件
-6. 将事件写入短期记忆目录
-7. 触发一次极简蒸馏
-8. 将结果写入长期记忆目录
-9. 读取长期记忆目录中的最新对象
-10. 输出运行摘要并退出
+5. 生成一条 `raw_capture` 事件
+6. 将事件写入 `memory/raw-capture/`
+7. 通过 `distill`（离线）执行 AI 过滤
+8. 将通过过滤的对象写入 `memory/short-term/`
+9. 输出运行摘要并退出
 
 说明：
 
@@ -217,17 +225,18 @@ MVP 的重点是未来能逐步做可靠性验证，因此每一步都应有明�
 - 每次运行都会生成一条事件文件
 - 事件文件字段完整
 
-### 验证点 3：长期记忆落点
+### 验证点 3：离线过滤与 short-term 落点
 
 验证目标：
 
-- 每次运行至少生成一个长期结果文件或占位结果文件
+- `distill` 可从 `raw_capture` 生成 short-term 文件
+- short-term 文件包含模型过滤元数据
 
 ### 验证点 4：回读
 
 验证目标：
 
-- 原型在一次运行结束前能重新读取长期目录中的最新对象
+- 原型在一次运行结束前能重新读取 short-term 目录中的最新对象（若存在）
 
 ### 验证点 5：重复运行
 
@@ -257,12 +266,13 @@ MVP 的重点是未来能逐步做可靠性验证，因此每一步都应有明�
 
 - CLI 入口
 - 一次性运行流程
-- 短期记忆文件写入
-- 长期记忆占位对象写入
+- `raw_capture` 文件写入
+- `distill` 到 short-term 的最小链路
 
 验收：
 
-- 一条命令跑完加载、写入、落点、回读
+- `run` 后看到 `raw_capture`
+- `distill` 后看到 short-term
 
 ### Phase 3: 增加最小校验与失败路径
 
@@ -296,21 +306,21 @@ MVP 的重点是未来能逐步做可靠性验证，因此每一步都应有明�
 - `runtime/`
 - `agents/<agent_id>/identity/`
 - `agents/<agent_id>/memory/short-term/`
-- `agents/<agent_id>/memory/long-term/`
+- `agents/<agent_id>/memory/raw-capture/`
 - `agents/<agent_id>/runs/`
 
 实现开始前还需要最终确认：
 
 - CLI 入口文件放置位置
 - `agent_identity` 文件格式是 JSON、YAML 还是 Markdown frontmatter
-- 长期记忆占位对象文件格式
+- 模型过滤输出的字段与版本管理策略
 
 ## Open Decisions To Resolve Before Implementation
 
 1. `agent_identity` 文件格式选型
 2. CLI 入口的命令行交互格式
-3. 短期记忆与长期记忆文件的命名规则
-4. 长期记忆第一版的占位对象格式
+3. `raw_capture` 与 short-term 文件的命名规则
+4. 模型过滤输出字段与质量标签规范
 5. 简单文件锁是否在第一版就需要
 
 ## Suggested Next Step
@@ -330,7 +340,7 @@ MVP 的重点是未来能逐步做可靠性验证，因此每一步都应有明�
 
 - 明确 `agent_identity` 文件格式
 - 明确短期记忆事件文件格式
-- 明确长期记忆占位对象文件格式
+- 明确 raw_capture 与 short-term 文件格式
 - 明确 `agents/<agent_id>/...` 目录骨架
 
 完成标准：
@@ -344,6 +354,7 @@ MVP 的重点是未来能逐步做可靠性验证，因此每一步都应有明�
 
 - 一个初始化命令
 - 一个单次运行命令
+- 一个离线过滤命令
 - 一个验证命令
 
 完成标准：
@@ -368,37 +379,38 @@ MVP 的重点是未来能逐步做可靠性验证，因此每一步都应有明�
 
 输出：
 
-- 生成一条最小公共信封事件
-- 将事件写入短期记忆目录
+- 生成一条 raw_capture 事件
+- 将事件写入 raw-capture 目录
 
 完成标准：
 
 - 单次运行必然生成一条事件文件
-- 事件字段满足当前公共信封草案
+- 事件字段满足当前采集信封草案
 
-### Task 5: 实现极简长期记忆落点
+### Task 5: 实现离线 AI 过滤到 short-term
 
 输出：
 
-- 从短期事件生成一个长期记忆占位对象
-- 将结果写入长期记忆目录
+- 从 raw_capture 生成 short-term 对象
+- 将结果写入 short-term 目录
+- 提供 AI provider 环境变量配置
 
 完成标准：
 
-- 长期目录中可看到新生成文件
-- 文件包含来源事件引用与时间戳
+- short-term 目录中可看到新生成文件
+- 文件包含来源 raw_capture 引用、过滤结果与质量标签
 
 ### Task 6: 实现单次运行摘要与回读
 
 输出：
 
-- 回读最新长期对象
+- 回读最新 short-term 对象
 - 输出本次运行摘要
 - 将摘要写入 `runs/`
 
 完成标准：
 
-- 一次运行结束前能看到长期对象回读结果
+- 一次运行结束前能看到 short-term 回读结果
 - `runs/` 中有本次摘要文件
 
 ### Task 7: 增加失败路径和重复运行验证
@@ -422,7 +434,7 @@ MVP 的重点是未来能逐步做可靠性验证，因此每一步都应有明�
 2. 固定 CLI 协议
 3. 建目录和身份加载
 4. 写短期记忆
-5. 写长期记忆
+5. 做离线 AI 过滤到 short-term
 6. 做回读和运行摘要
 7. 做失败路径和重复运行验证
 
@@ -433,6 +445,6 @@ MVP 的重点是未来能逐步做可靠性验证，因此每一步都应有明�
 1. 初始化一个实验性 `agent_identity`
 2. 启动单次运行命令并传入最小输入
 3. 在短期目录看到新事件文件
-4. 在长期目录看到新占位对象
+4. 执行 `distill` 后在 short-term 目录看到新对象
 5. 在 `runs/` 看到本次摘要
 6. 再运行一次，确认旧文件未损坏且新文件继续生成

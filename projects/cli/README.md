@@ -6,8 +6,8 @@
 
 - 提供本地单进程 CLI 入口
 - 加载 `agents/` 下的 `agent_identity.json`
-- 写入短期记忆事件
-- 生成长期记忆占位对象
+- 写入 `raw-capture` 采集事件
+- 通过 `distill` 命令把 `raw-capture` 过滤为 short-term
 - 输出运行摘要
 
 如果已经安装了仓库级 `agents` launcher，也可以直接在任意项目目录调用 `agents ...`。通过 launcher 运行时，它会默认把当前仓库作为共享根；可通过 `OBSIDIAN_AGENT_MEMORY_SERVER_SHARED_ROOT` 临时覆盖。
@@ -43,8 +43,16 @@ agents mount
 ```bash
 npm --prefix projects/cli run cli -- init --agent-id demo-agent
 npm --prefix projects/cli run cli -- run --agent-id demo-agent --input "summarize current contract research"
+npm --prefix projects/cli run cli -- distill --agent-id demo-agent --limit 20
 npm --prefix projects/cli run cli -- verify --agent-id demo-agent
 ```
+
+AI 过滤环境变量（MVP）：
+
+- 默认从 `~/.codex/config.toml` 读取 `model_provider` 与 `model`
+- `OBSIDIAN_AGENT_MEMORY_SERVER_DISTILL_PROVIDER`（可选，覆盖 config.toml）
+- `OPENAI_API_KEY`（`openai` provider 必填）
+- `OBSIDIAN_AGENT_MEMORY_SERVER_DISTILL_MODEL`（可选）
 
 运行测试：
 

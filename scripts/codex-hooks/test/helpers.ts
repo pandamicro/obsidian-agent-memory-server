@@ -5,11 +5,12 @@ import { join, resolve } from 'node:path';
 
 export const repoRoot = resolve(fileURLToPath(new URL('../../../', import.meta.url)));
 
-export function spawnAgents(args: string[], sharedRoot: string) {
+export function spawnAgents(args: string[], sharedRoot: string, env: NodeJS.ProcessEnv = {}) {
   return spawnSync(join(repoRoot, 'bin', 'agents'), args, {
     cwd: repoRoot,
     env: {
       ...process.env,
+      ...env,
       OBSIDIAN_AGENT_MEMORY_SERVER_SHARED_ROOT: sharedRoot,
       OBSIDIAN_AGENT_MEMORY_SERVER_ROOT: sharedRoot,
     },
@@ -27,4 +28,3 @@ export async function bindAgent(workspaceRoot: string, agentId: string) {
     'utf8',
   );
 }
-

@@ -33,30 +33,6 @@
           }
         ]
       }
-    ],
-    "PreToolUse": [
-      {
-        "matcher": "Bash",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node --experimental-strip-types \"/Users/screamcart-agent0/obsidian-agent-memory-server/scripts/codex-hooks/pre-tool-use.ts\"",
-            "statusMessage": "Checking Bash command"
-          }
-        ]
-      }
-    ],
-    "PostToolUse": [
-      {
-        "matcher": "Bash",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node --experimental-strip-types \"/Users/screamcart-agent0/obsidian-agent-memory-server/scripts/codex-hooks/post-tool-use.ts\"",
-            "statusMessage": "Recording Bash result"
-          }
-        ]
-      }
     ]
   }
 }

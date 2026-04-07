@@ -1,6 +1,7 @@
 import { copyFile, mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
-import { realpathSync } from 'node:fs';
+import { readFileSync, realpathSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
+import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { fileURLToPath } from 'node:url';
@@ -110,13 +111,13 @@ async function handleInit(agentId: string, rootDir: string) {
   await ensureEmptyOrMissing(agentRoot);
 
   const identityDir = join(agentRoot, 'identity');
+  const rawCaptureDir = join(agentRoot, 'memory', 'raw-capture');
   const shortTermDir = join(agentRoot, 'memory', 'short-term');
-  const longTermDir = join(agentRoot, 'memory', 'long-term');
   const runsDir = join(agentRoot, 'runs');
 
   await mkdir(identityDir, { recursive: true });
+  await mkdir(rawCaptureDir, { recursive: true });
   await mkdir(shortTermDir, { recursive: true });
-  await mkdir(longTermDir, { recursive: true });
   await mkdir(runsDir, { recursive: true });
 
   const identityPath = join(identityDir, 'agent_identity.json');
@@ -253,6 +254,411 @@ async function writeJsonFile(path: string, value: unknown) {
   await writeFile(path, `${JSON.stringify(value, null, 2)}\n`, 'utf8');
 }
 
+type ShortTermSignalPolarity = 'supporting' | 'conflicting' | 'insufficient';
+
+type ParsedShortTermCandidate = {
+  signal_type: string;
+  polarity: ShortTermSignalPolarity;
+  summary: string;
+  evidence_refs: string[];
+};
+
+type ParsedShortTermInput = {
+  source_kind: 'hook_flush' | 'direct_input';
+  session_id?: string;
+  workspace_root?: string;
+  assistant_summary?: string;
+  candidates: ParsedShortTermCandidate[];
+};
+
+type RawCaptureEvent = {
+  schema_version: '1';
+  message_id: string;
+  identity_id: string;
+  object_kind: 'raw_capture';
+  object_ref: string;
+  event_type: 'captured';
+  evidence_refs: string[];
+  observed_at: string;
+  source_kind: 'hook_flush' | 'direct_input';
+  session_id: string | null;
+  workspace_root: string | null;
+  assistant_summary: string | null;
+  candidates: ParsedShortTermCandidate[];
+  input: string;
+};
+
+type DistilledShortTerm = {
+  event_type: 'captured';
+  object_kind: 'episode';
+  signal_type: string;
+  polarity: ShortTermSignalPolarity;
+  summary: string;
+  evidence_refs: string[];
+  quality: {
+    observable: boolean;
+    linkable: boolean;
+    evaluatable: boolean;
+    distillable: boolean;
+    status: 'pass' | 'needs_review' | 'rejected';
+    reasons: string[];
+  };
+  confidence: number;
+  parser_reason: string;
+};
+
+type DistillProviderRuntime = {
+  provider: string;
+  model: string;
+  baseUrl?: string;
+  wireApi?: string;
+  requiresOpenAIAuth: boolean;
+};
+
+function parseHookFlushInput(input: string): ParsedShortTermInput {
+  const lines = input.split('\n').map((line) => line.trim());
+  const firstLine = lines[0] ?? '';
+  const isHookFlush = firstLine.startsWith('[hook flush]');
+  if (!isHookFlush) {
+    return {
+      source_kind: 'direct_input',
+      candidates: [],
+    };
+  }
+
+  const sessionMatch = firstLine.match(/\bsession=([^\s]+)/);
+  const result: ParsedShortTermInput = {
+    source_kind: 'hook_flush',
+    session_id: sessionMatch?.[1],
+    candidates: [],
+  };
+
+  let inCandidates = false;
+  for (const line of lines.slice(1)) {
+    if (!line) {
+      continue;
+    }
+
+    if (line === 'candidates:') {
+      inCandidates = true;
+      continue;
+    }
+
+    if (!inCandidates) {
+      if (line.startsWith('workspace=')) {
+        result.workspace_root = line.slice('workspace='.length).trim();
+        continue;
+      }
+      if (line.startsWith('assistant=')) {
+        result.assistant_summary = line.slice('assistant='.length).trim();
+        continue;
+      }
+      continue;
+    }
+
+    const candidateMatch = line.match(
+      /^-\s*([a-z_]+)\/(supporting|conflicting|insufficient):\s*([\s\S]+)$/u,
+    );
+    if (!candidateMatch) {
+      continue;
+    }
+
+    let summary = candidateMatch[3]?.trim() ?? '';
+    let evidenceRefs: string[] = [];
+
+    const evidenceMatch = summary.match(/^(.*)\s+\[([^\]]+)\]\s*$/u);
+    if (evidenceMatch) {
+      summary = evidenceMatch[1]?.trim() ?? summary;
+      evidenceRefs = (evidenceMatch[2] ?? '')
+        .split(',')
+        .map((entry) => entry.trim())
+        .filter(Boolean);
+    }
+
+    result.candidates.push({
+      signal_type: candidateMatch[1] ?? 'unknown',
+      polarity: (candidateMatch[2] as ShortTermSignalPolarity) ?? 'insufficient',
+      summary,
+      evidence_refs: evidenceRefs,
+    });
+  }
+
+  return result;
+}
+
+function buildShortTermQuality(parsed: ParsedShortTermInput, observedAt: string, messageId: string) {
+  const observable = observedAt.length > 0;
+  const linkable = parsed.source_kind === 'hook_flush'
+    ? Boolean(parsed.session_id) && parsed.candidates.some((candidate) => candidate.evidence_refs.length > 0)
+    : true;
+  const evaluatable = parsed.source_kind === 'hook_flush'
+    ? parsed.candidates.length > 0 || Boolean(parsed.assistant_summary)
+    : true;
+  const distillable = parsed.source_kind === 'hook_flush'
+    ? parsed.candidates.some((candidate) => candidate.polarity !== 'insufficient' && candidate.evidence_refs.length > 0)
+    : false;
+
+  const reasons: string[] = [];
+  if (!observable) reasons.push('missing observed_at');
+  if (!linkable) reasons.push('missing structured evidence refs');
+  if (!evaluatable) reasons.push('missing evaluatable signal');
+  if (!distillable) reasons.push('missing strong structured candidate');
+
+  return {
+    quality_id: `q:${messageId}`,
+    observable,
+    linkable,
+    evaluatable,
+    distillable,
+    status: observable && linkable && evaluatable ? 'pass' : 'needs_review',
+    reasons,
+  };
+}
+
+function parseTomlValue(raw: string): string | boolean | number {
+  const trimmed = raw.trim();
+  if (trimmed === 'true') return true;
+  if (trimmed === 'false') return false;
+  if (trimmed.startsWith('"') && trimmed.endsWith('"')) {
+    return trimmed.slice(1, -1);
+  }
+  const asNumber = Number(trimmed);
+  if (Number.isFinite(asNumber)) {
+    return asNumber;
+  }
+  return trimmed;
+}
+
+function loadCodexConfigToml(): {
+  topLevel: Record<string, string | boolean | number>;
+  sections: Record<string, Record<string, string | boolean | number>>;
+} {
+  const configPath = process.env.OBSIDIAN_AGENT_MEMORY_SERVER_CODEX_CONFIG_PATH?.trim()
+    || process.env.CODEX_CONFIG_PATH?.trim()
+    || join(homedir(), '.codex', 'config.toml');
+
+  let content = '';
+  try {
+    content = readFileSync(configPath, 'utf8');
+  } catch {
+    return { topLevel: {}, sections: {} };
+  }
+
+  const topLevel: Record<string, string | boolean | number> = {};
+  const sections: Record<string, Record<string, string | boolean | number>> = {};
+  let currentSection: string | null = null;
+
+  for (const rawLine of content.split('\n')) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith('#')) {
+      continue;
+    }
+
+    const sectionMatch = line.match(/^\[([^\]]+)\]$/);
+    if (sectionMatch) {
+      currentSection = sectionMatch[1]!.trim();
+      if (!sections[currentSection]) {
+        sections[currentSection] = {};
+      }
+      continue;
+    }
+
+    const kvMatch = line.match(/^([A-Za-z0-9_.-]+)\s*=\s*(.+)$/);
+    if (!kvMatch) {
+      continue;
+    }
+    const key = kvMatch[1]!.trim();
+    const value = parseTomlValue(kvMatch[2]!);
+
+    if (currentSection) {
+      sections[currentSection]![key] = value;
+    } else {
+      topLevel[key] = value;
+    }
+  }
+
+  return { topLevel, sections };
+}
+
+function readDistillRuntimeConfig(): DistillProviderRuntime {
+  const parsedConfig = loadCodexConfigToml();
+  const envProvider = process.env.OBSIDIAN_AGENT_MEMORY_SERVER_DISTILL_PROVIDER?.trim().toLowerCase();
+  const providerFromConfig = typeof parsedConfig.topLevel.model_provider === 'string'
+    ? String(parsedConfig.topLevel.model_provider).trim().toLowerCase()
+    : '';
+
+  const provider = envProvider || providerFromConfig || 'mock';
+
+  const sectionKey = `model_providers.${provider}`;
+  const providerSection = parsedConfig.sections[sectionKey] ?? {};
+
+  const modelFromConfig = typeof parsedConfig.topLevel.model === 'string'
+    ? String(parsedConfig.topLevel.model).trim()
+    : '';
+  const envModel = process.env.OBSIDIAN_AGENT_MEMORY_SERVER_DISTILL_MODEL?.trim();
+  const model = envModel || modelFromConfig || 'gpt-5.4-mini';
+
+  const baseUrl = typeof providerSection.base_url === 'string'
+    ? String(providerSection.base_url).trim()
+    : provider === 'openai'
+      ? 'https://api.openai.com'
+      : undefined;
+
+  const wireApi = typeof providerSection.wire_api === 'string'
+    ? String(providerSection.wire_api).trim()
+    : 'responses';
+
+  const requiresOpenAIAuth = typeof providerSection.requires_openai_auth === 'boolean'
+    ? Boolean(providerSection.requires_openai_auth)
+    : provider === 'openai';
+
+  return {
+    provider,
+    model,
+    baseUrl,
+    wireApi,
+    requiresOpenAIAuth,
+  };
+}
+
+async function distillWithResponsesApi(raw: RawCaptureEvent, runtime: DistillProviderRuntime): Promise<DistilledShortTerm> {
+  if (!runtime.baseUrl) {
+    throw new Error(`Missing base_url for distill provider: ${runtime.provider}`);
+  }
+
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+  };
+  if (runtime.requiresOpenAIAuth) {
+    const apiKey = process.env.OPENAI_API_KEY?.trim();
+    if (!apiKey) {
+      throw new Error(`Missing OPENAI_API_KEY for distill provider: ${runtime.provider}`);
+    }
+    headers.Authorization = `Bearer ${apiKey}`;
+  }
+
+  const prompt = [
+    'You are a short-term memory filter for agentic systems.',
+    'Return strict JSON only with keys: event_type, object_kind, signal_type, polarity, summary, evidence_refs, quality, confidence, parser_reason.',
+    'Rules:',
+    '- event_type must be captured',
+    '- object_kind must be episode',
+    '- polarity in supporting/conflicting/insufficient',
+    '- quality.status in pass/needs_review/rejected',
+    '- no markdown',
+    `raw_capture=${JSON.stringify(raw)}`,
+  ].join('\n');
+
+  const normalizedBase = runtime.baseUrl.replace(/\/+$/, '');
+  const endpoint = runtime.wireApi === 'responses'
+    ? `${normalizedBase}/v1/responses`
+    : `${normalizedBase}/v1/responses`;
+
+  const response = await fetch(endpoint, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({
+      model: runtime.model,
+      input: prompt,
+      text: {
+        format: {
+          type: 'json_schema',
+          name: 'short_term_memory_filter',
+          schema: {
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+              event_type: { type: 'string' },
+              object_kind: { type: 'string' },
+              signal_type: { type: 'string' },
+              polarity: { type: 'string' },
+              summary: { type: 'string' },
+              evidence_refs: { type: 'array', items: { type: 'string' } },
+              quality: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  observable: { type: 'boolean' },
+                  linkable: { type: 'boolean' },
+                  evaluatable: { type: 'boolean' },
+                  distillable: { type: 'boolean' },
+                  status: { type: 'string' },
+                  reasons: { type: 'array', items: { type: 'string' } },
+                },
+                required: ['observable', 'linkable', 'evaluatable', 'distillable', 'status', 'reasons'],
+              },
+              confidence: { type: 'number' },
+              parser_reason: { type: 'string' },
+            },
+            required: [
+              'event_type',
+              'object_kind',
+              'signal_type',
+              'polarity',
+              'summary',
+              'evidence_refs',
+              'quality',
+              'confidence',
+              'parser_reason',
+            ],
+          },
+        },
+      },
+    }),
+  });
+
+  if (!response.ok) {
+    throw new Error(`Distill failed (${runtime.provider}): ${response.status} ${response.statusText}`);
+  }
+
+  const parsedResponse = await response.json() as { output_text?: string };
+  if (!parsedResponse.output_text) {
+    throw new Error('OpenAI distill response missing output_text');
+  }
+
+  return JSON.parse(parsedResponse.output_text) as DistilledShortTerm;
+}
+
+async function distillWithMock(raw: RawCaptureEvent): Promise<DistilledShortTerm> {
+  const firstCandidate = raw.candidates[0];
+  const summary = firstCandidate?.summary ?? raw.assistant_summary ?? raw.input.slice(0, 200);
+  const signalType = firstCandidate?.signal_type ?? (raw.source_kind === 'hook_flush' ? 'environmental_outcome' : 'explicit');
+  const polarity = firstCandidate?.polarity ?? 'supporting';
+  const evidenceRefs = firstCandidate?.evidence_refs?.length
+    ? firstCandidate.evidence_refs
+    : raw.evidence_refs;
+
+  return {
+    event_type: 'captured',
+    object_kind: 'episode',
+    signal_type: signalType,
+    polarity,
+    summary,
+    evidence_refs: evidenceRefs,
+    quality: {
+      observable: true,
+      linkable: evidenceRefs.length > 0,
+      evaluatable: Boolean(summary),
+      distillable: raw.source_kind === 'hook_flush' ? raw.candidates.length > 0 : false,
+      status: summary ? 'pass' : 'needs_review',
+      reasons: summary ? [] : ['missing_summary'],
+    },
+    confidence: raw.source_kind === 'hook_flush' ? 0.78 : 0.62,
+    parser_reason: `mock:${raw.source_kind}`,
+  };
+}
+
+async function distillRawCapture(raw: RawCaptureEvent): Promise<DistilledShortTerm> {
+  const runtime = readDistillRuntimeConfig();
+  if (runtime.provider === 'mock') {
+    return distillWithMock(raw);
+  }
+  if (runtime.wireApi === 'responses' || runtime.provider === 'openai' || runtime.baseUrl) {
+    return distillWithResponsesApi(raw, runtime);
+  }
+  throw new Error(`Unsupported distill provider: ${runtime.provider}`);
+}
+
 function getWorkspaceCodexDir(workspaceRoot: string) {
   return join(workspaceRoot, '.codex');
 }
@@ -345,50 +751,45 @@ async function promptMountSelection(workspaceRoot: string, agents: AgentSummary[
 
 async function handleRun(agentId: string, input: string, rootDir: string) {
   const agentRoot = join(rootDir, 'agents', agentId);
+  const rawCaptureDir = join(agentRoot, 'memory', 'raw-capture');
   const shortTermDir = join(agentRoot, 'memory', 'short-term');
-  const longTermDir = join(agentRoot, 'memory', 'long-term');
   const runsDir = join(agentRoot, 'runs');
 
   const identity = await readIdentity(agentId, rootDir);
+  await mkdir(rawCaptureDir, { recursive: true });
   await mkdir(shortTermDir, { recursive: true });
-  await mkdir(longTermDir, { recursive: true });
   await mkdir(runsDir, { recursive: true });
 
   const observedAt = createTimestamp();
   const messageId = randomUUID();
-  const objectRef = `episode:${messageId}`;
+  const objectRef = `raw-capture:${messageId}`;
+  const parsedInput = parseHookFlushInput(input);
 
-  const shortTermEvent = {
+  const rawCaptureEvent: RawCaptureEvent = {
+    schema_version: '1',
     message_id: messageId,
     identity_id: identity.agent_id,
-    object_kind: 'episode',
+    object_kind: 'raw_capture',
     object_ref: objectRef,
     event_type: 'captured',
     evidence_refs: [`input:${messageId}`],
     observed_at: observedAt,
+    source_kind: parsedInput.source_kind,
+    session_id: parsedInput.session_id ?? null,
+    workspace_root: parsedInput.workspace_root ?? null,
+    assistant_summary: parsedInput.assistant_summary ?? null,
+    candidates: parsedInput.candidates,
     input,
   };
 
-  const shortTermPath = join(shortTermDir, `${observedAt.replaceAll(':', '-')}-${messageId}.json`);
-  await writeJsonFile(shortTermPath, shortTermEvent);
-
-  const longTermObject = {
-    object_ref: `long-term:${messageId}`,
-    identity_id: identity.agent_id,
-    source_message_id: messageId,
-    created_at: observedAt,
-    summary: `Placeholder memory derived from input: ${input}`,
-  };
-
-  const longTermPath = join(longTermDir, `${observedAt.replaceAll(':', '-')}-${messageId}.json`);
-  await writeJsonFile(longTermPath, longTermObject);
+  const rawCapturePath = join(rawCaptureDir, `${observedAt.replaceAll(':', '-')}-${messageId}.json`);
+  await writeJsonFile(rawCapturePath, rawCaptureEvent);
 
   const runSummary = {
     run_id: messageId,
     agent_id: identity.agent_id,
-    short_term_event_path: shortTermPath,
-    long_term_object_path: longTermPath,
-    latest_long_term_ref: longTermObject.object_ref,
+    raw_capture_event_path: rawCapturePath,
+    raw_capture_count: 1,
     observed_at: observedAt,
   };
 
@@ -396,47 +797,161 @@ async function handleRun(agentId: string, input: string, rootDir: string) {
   await writeJsonFile(runSummaryPath, runSummary);
 
   console.log(`Agent: ${identity.agent_id}`);
-  console.log(`Short-term event: ${shortTermPath}`);
-  console.log(`Long-term object: ${longTermPath}`);
-  console.log(`Latest long-term ref: ${longTermObject.object_ref}`);
+  console.log(`Raw capture event: ${rawCapturePath}`);
+  console.log(`Raw capture candidates: ${parsedInput.candidates.length}`);
 }
 
-async function readLatestLongTermObject(longTermDir: string) {
-  const files = (await readdir(longTermDir)).filter((file) => file.endsWith('.json')).sort();
+async function readLatestShortTermEvent(shortTermDir: string) {
+  const files = (await readdir(shortTermDir)).filter((file) => file.endsWith('.json')).sort();
   if (files.length === 0) {
-    throw new Error(`No long-term objects found in ${longTermDir}`);
+    return null;
   }
 
   const latestFile = files.at(-1)!;
-  const latestPath = join(longTermDir, latestFile);
+  const latestPath = join(shortTermDir, latestFile);
   const content = await readFile(latestPath, 'utf8');
 
   return {
     path: latestPath,
-    value: JSON.parse(content) as { object_ref?: string },
+    value: JSON.parse(content) as { object_ref?: string; quality?: { status?: string } },
   };
+}
+
+async function readRawCaptureEvents(rawCaptureDir: string): Promise<Array<{ path: string; value: RawCaptureEvent }>> {
+  const files = (await readdir(rawCaptureDir)).filter((file) => file.endsWith('.json')).sort();
+  const events: Array<{ path: string; value: RawCaptureEvent }> = [];
+  for (const file of files) {
+    const path = join(rawCaptureDir, file);
+    const content = await readFile(path, 'utf8');
+    events.push({
+      path,
+      value: JSON.parse(content) as RawCaptureEvent,
+    });
+  }
+  return events;
+}
+
+async function readShortTermSourceIds(shortTermDir: string): Promise<Set<string>> {
+  const files = (await readdir(shortTermDir)).filter((file) => file.endsWith('.json')).sort();
+  const sourceIds = new Set<string>();
+  for (const file of files) {
+    const path = join(shortTermDir, file);
+    const content = await readFile(path, 'utf8');
+    const parsed = JSON.parse(content) as { source_message_id?: string };
+    if (parsed.source_message_id) {
+      sourceIds.add(parsed.source_message_id);
+    }
+  }
+  return sourceIds;
+}
+
+async function handleDistill(agentId: string, limitRaw: string | undefined, rootDir: string) {
+  const agentRoot = join(rootDir, 'agents', agentId);
+  const rawCaptureDir = join(agentRoot, 'memory', 'raw-capture');
+  const shortTermDir = join(agentRoot, 'memory', 'short-term');
+  const runsDir = join(agentRoot, 'runs');
+
+  const identity = await readIdentity(agentId, rootDir);
+  await mkdir(rawCaptureDir, { recursive: true });
+  await mkdir(shortTermDir, { recursive: true });
+  await mkdir(runsDir, { recursive: true });
+
+  const maxItems = Number.parseInt(limitRaw ?? '20', 10);
+  if (!Number.isInteger(maxItems) || maxItems <= 0) {
+    throw new Error(`Invalid --limit value: ${limitRaw ?? '<missing>'}`);
+  }
+
+  const allRaw = await readRawCaptureEvents(rawCaptureDir);
+  const processedSourceIds = await readShortTermSourceIds(shortTermDir);
+  const pending = allRaw.filter((event) => !processedSourceIds.has(event.value.message_id)).slice(0, maxItems);
+  const runtimeConfig = readDistillRuntimeConfig();
+
+  let distilledCount = 0;
+  let skippedCount = 0;
+  for (const item of pending) {
+    try {
+      const distilled = await distillRawCapture(item.value);
+      if (distilled.quality.status === 'rejected') {
+        skippedCount += 1;
+        continue;
+      }
+
+      const observedAt = createTimestamp();
+      const shortTermId = randomUUID();
+      const shortTermObject = {
+        schema_version: '1',
+        message_id: shortTermId,
+        source_message_id: item.value.message_id,
+        identity_id: identity.agent_id,
+        filtered_by_model: true,
+        model_provider: runtimeConfig.provider,
+        model_name: runtimeConfig.model,
+        object_kind: distilled.object_kind,
+        object_ref: `episode:${shortTermId}`,
+        event_type: distilled.event_type,
+        signal_type: distilled.signal_type,
+        polarity: distilled.polarity,
+        summary: distilled.summary,
+        evidence_refs: distilled.evidence_refs,
+        confidence: Math.max(0, Math.min(1, distilled.confidence)),
+        parser_reason: distilled.parser_reason,
+        quality: distilled.quality,
+        raw_capture_ref: item.path,
+        observed_at: observedAt,
+      };
+
+      const shortTermPath = join(shortTermDir, `${observedAt.replaceAll(':', '-')}-${shortTermId}.json`);
+      await writeJsonFile(shortTermPath, shortTermObject);
+      distilledCount += 1;
+    } catch {
+      skippedCount += 1;
+    }
+  }
+
+  const runId = randomUUID();
+  const observedAt = createTimestamp();
+  const runSummary = {
+    run_id: runId,
+    agent_id: identity.agent_id,
+    distill_source: 'raw-capture',
+    scanned: pending.length,
+    distilled: distilledCount,
+    skipped: skippedCount,
+    observed_at: observedAt,
+  };
+  const runSummaryPath = join(runsDir, `${observedAt.replaceAll(':', '-')}-${runId}.json`);
+  await writeJsonFile(runSummaryPath, runSummary);
+
+  console.log(`Agent: ${identity.agent_id}`);
+  console.log(`Distilled short-term records: ${distilledCount}`);
+  console.log(`Skipped raw captures: ${skippedCount}`);
 }
 
 async function handleVerify(agentId: string, rootDir: string, workspaceRoot: string) {
   await assertAgentVisible(agentId, rootDir, workspaceRoot);
   const agentRoot = join(rootDir, 'agents', agentId);
   const identityDir = join(agentRoot, 'identity');
+  const rawCaptureDir = join(agentRoot, 'memory', 'raw-capture');
   const shortTermDir = join(agentRoot, 'memory', 'short-term');
-  const longTermDir = join(agentRoot, 'memory', 'long-term');
   const runsDir = join(agentRoot, 'runs');
 
   await readdir(identityDir);
+  await readdir(rawCaptureDir);
   await readdir(shortTermDir);
-  await readdir(longTermDir);
   await readdir(runsDir);
 
   const identity = await readIdentity(agentId, rootDir);
-  const latestLongTerm = await readLatestLongTermObject(longTermDir);
+  const latestShortTerm = await readLatestShortTermEvent(shortTermDir);
 
   console.log(`Verified agent: ${identity.agent_id}`);
   console.log(`Identity file is valid`);
-  console.log(`Latest long-term ref: ${latestLongTerm.value.object_ref ?? '<missing>'}`);
-  console.log(`Latest long-term path: ${latestLongTerm.path}`);
+  if (latestShortTerm) {
+    console.log(`Latest short-term ref: ${latestShortTerm.value.object_ref ?? '<missing>'}`);
+    console.log(`Latest short-term quality: ${latestShortTerm.value.quality?.status ?? '<missing>'}`);
+    console.log(`Latest short-term path: ${latestShortTerm.path}`);
+  } else {
+    console.log('Latest short-term ref: <none>');
+  }
 }
 
 async function handleList(rootDir: string, workspaceRoot: string) {
@@ -504,6 +1019,16 @@ async function main() {
       throw new Error('Missing required option: --agent-id');
     }
     await handleVerify(agentId, rootDir, workspaceRoot);
+    return;
+  }
+
+  if (command === 'distill') {
+    const agentId = options.get('agent-id');
+    if (!agentId) {
+      throw new Error('Missing required option: --agent-id');
+    }
+    await assertAgentVisible(agentId, rootDir, workspaceRoot);
+    await handleDistill(agentId, options.get('limit'), rootDir);
     return;
   }
 

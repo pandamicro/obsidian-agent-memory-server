@@ -14,6 +14,14 @@ async function setupDriver() {
     spawnAgents(['run', '--agent-id', 'research-agent', '--input', 'seed memory for adapters'], sharedRoot).status,
     0,
   );
+  assert.equal(
+    spawnAgents(
+      ['distill', '--agent-id', 'research-agent', '--limit', '10'],
+      sharedRoot,
+      { OBSIDIAN_AGENT_MEMORY_SERVER_DISTILL_PROVIDER: 'mock' },
+    ).status,
+    0,
+  );
 
   const workspaceRoot = await mkdtemp(join(tmpdir(), 'codex-hooks-adapter-workspace-'));
   await bindAgent(workspaceRoot, 'research-agent');
@@ -91,4 +99,3 @@ test('SessionStart and UserPromptSubmit produce memory context when bound', asyn
   assert.ok(promptResponse);
   assert.match(promptResponse?.hookSpecificOutput?.additionalContext ?? '', /Latest summary:/);
 });
-

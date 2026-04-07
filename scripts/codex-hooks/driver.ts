@@ -7,14 +7,16 @@ import {
   asText,
   compactText,
   makeAdditionalContext,
+  normalizeHookEnvelope,
+  type HookEnvelope,
   type HookEventName,
   type HookInput,
   type HookResponse,
 } from './contracts.ts';
 import {
   addPendingFeedback,
-  addPendingLongTermCandidate,
-  clearPendingLongTermCandidates,
+  appendHookLog,
+  clearFailure,
   createDefaultSessionState,
   getSessionStatePath,
   getStateBindingPath,
@@ -27,6 +29,7 @@ import {
   resolveStateRoot,
   resolveWorkspaceRoot,
   saveSessionState,
+  trackFailure,
   updateLastFlush,
   type FeedbackEntry,
   type SessionState,
@@ -36,6 +39,7 @@ export type HookDriverOptions = {
   sourceRepoRoot?: string;
   sharedRoot?: string;
   stateRoot?: string;
+  agentsTimeoutMs?: number;
 };
 
 export type HookDriver = {
@@ -61,12 +65,33 @@ function getAgentsCommand(sourceRepoRoot: string): string {
   return join(sourceRepoRoot, 'bin', 'agents');
 }
 
+type AgentsCommandReason = 'ok' | 'timeout' | 'spawn_error' | 'exit_nonzero';
+
+type AgentsCommandResult = {
+  code: number;
+  stdout: string;
+  stderr: string;
+  reason: AgentsCommandReason;
+};
+
+function readAgentsTimeoutMs(options: HookDriverOptions): number {
+  const raw = options.agentsTimeoutMs ?? Number.parseInt(process.env.OBSIDIAN_AGENT_MEMORY_SERVER_HOOKS_AGENTS_TIMEOUT_MS ?? '', 10);
+  if (!Number.isFinite(raw)) {
+    return 12000;
+  }
+  const rounded = Math.floor(raw);
+  if (rounded < 1000) return 1000;
+  if (rounded > 120000) return 120000;
+  return rounded;
+}
+
 function runAgentsCommand(
   sourceRepoRoot: string,
   args: string[],
   sharedRoot: string,
   workspaceRoot: string,
-): { code: number; stdout: string; stderr: string } {
+  timeoutMs: number,
+): AgentsCommandResult {
   const result = spawnSync(getAgentsCommand(sourceRepoRoot), args, {
     env: {
       ...process.env,
@@ -76,17 +101,64 @@ function runAgentsCommand(
     },
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'pipe'],
+    timeout: timeoutMs,
   });
+
+  const stdout = result.stdout ?? '';
+  const stderr = result.stderr ?? '';
+  const errorCode = (result.error as NodeJS.ErrnoException | undefined)?.code;
+  const errorMessage = result.error?.message ?? '';
+
+  if (result.status === 0) {
+    return {
+      code: 0,
+      stdout,
+      stderr,
+      reason: 'ok',
+    };
+  }
+
+  if (errorCode === 'ETIMEDOUT' || /timed?\s*out/i.test(errorMessage)) {
+    return {
+      code: 124,
+      stdout,
+      stderr: compactText(`${stderr}\n${errorMessage}`.trim() || `agents command timed out after ${timeoutMs}ms`),
+      reason: 'timeout',
+    };
+  }
+
+  if (result.error) {
+    return {
+      code: result.status ?? 1,
+      stdout,
+      stderr: compactText(`${stderr}\n${errorMessage}`.trim() || 'agents command failed to spawn'),
+      reason: 'spawn_error',
+    };
+  }
 
   return {
     code: result.status ?? 1,
-    stdout: result.stdout ?? '',
-    stderr: result.stderr ?? '',
+    stdout,
+    stderr,
+    reason: 'exit_nonzero',
   };
 }
 
-function listAgents(sourceRepoRoot: string, sharedRoot: string, workspaceRoot: string) {
-  const result = runAgentsCommand(sourceRepoRoot, ['list'], sharedRoot, workspaceRoot);
+function logHookEvent(
+  stateRoot: string,
+  workspaceRoot: string,
+  sessionId: string,
+  payload: Record<string, unknown>,
+): void {
+  appendHookLog(stateRoot, {
+    workspace_root: workspaceRoot,
+    session_id: sessionId,
+    ...payload,
+  });
+}
+
+function listAgents(sourceRepoRoot: string, sharedRoot: string, workspaceRoot: string, agentsTimeoutMs: number) {
+  const result = runAgentsCommand(sourceRepoRoot, ['list'], sharedRoot, workspaceRoot, agentsTimeoutMs);
   if (result.code !== 0) {
     return [] as Array<{ agent_id: string; canonical_name?: string }>;
   }
@@ -98,24 +170,216 @@ function listAgents(sourceRepoRoot: string, sharedRoot: string, workspaceRoot: s
   }
 }
 
+type AgentProfile = {
+  agent_id: string;
+  canonical_name?: string;
+  specialization?: string;
+  mission?: string;
+};
+
+function readAgentProfile(sharedRoot: string, agentId: string): AgentProfile | null {
+  const identityPath = join(sharedRoot, 'agents', agentId, 'identity', 'agent_identity.json');
+  try {
+    const parsed = JSON.parse(readFileSync(identityPath, 'utf8')) as Partial<AgentProfile>;
+    return {
+      agent_id: agentId,
+      canonical_name: asText(parsed.canonical_name ?? '').trim() || undefined,
+      specialization: asText(parsed.specialization ?? '').trim() || undefined,
+      mission: asText(parsed.mission ?? '').trim() || undefined,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function listAgentProfiles(
+  sourceRepoRoot: string,
+  sharedRoot: string,
+  workspaceRoot: string,
+  agentsTimeoutMs: number,
+): AgentProfile[] {
+  return listAgents(sourceRepoRoot, sharedRoot, workspaceRoot, agentsTimeoutMs)
+    .map((entry) => readAgentProfile(sharedRoot, entry.agent_id))
+    .filter((entry): entry is AgentProfile => Boolean(entry));
+}
+
+type StrictRule = {
+  specialization: string;
+  strongPromptPatterns: RegExp[];
+  promptPatterns: RegExp[];
+  workspacePatterns: RegExp[];
+};
+
+const STRICT_SPECIALIZATION_RULES: StrictRule[] = [
+  {
+    specialization: 'agentic-memory-framework-development',
+    strongPromptPatterns: [
+      /\bagentic\s+memory\b/i,
+      /\bagent(?:\s+identity)?\s+memory\b/i,
+      /\bcodex\s+hooks?\b/i,
+      /\bhooks?\s+memory\s+registration\b/i,
+      /agent\s+identity/i,
+      /记忆.*hook|hook.*记忆/u,
+      /agent\s*identity/u,
+    ],
+    promptPatterns: [
+      /\bmemory\b/i,
+      /\bhook\b/i,
+      /\bhooks\b/i,
+      /\blong[-\s]?term\b/i,
+      /\bshort[-\s]?term\b/i,
+      /\bportable[-\s]?agent[-\s]?contract\b/i,
+      /动态记忆|长期记忆|短期记忆|记忆注册/u,
+    ],
+    workspacePatterns: [
+      /obsidian-agent-memory-server/i,
+      /agent-memory/i,
+    ],
+  },
+  {
+    specialization: 'research',
+    strongPromptPatterns: [
+      /\bresearch\b/i,
+      /\binvestigate\b/i,
+      /\bevidence\b/i,
+      /\bliterature\b/i,
+      /调研|研究|证据|一手资料/u,
+    ],
+    promptPatterns: [
+      /\banaly[sz]e\b/i,
+      /\bcompare\b/i,
+      /\bsurvey\b/i,
+      /\bpaper\b/i,
+      /\bbenchmark\b/i,
+      /对比|分析/u,
+    ],
+    workspacePatterns: [
+      /research/i,
+      /paper/i,
+      /docs/i,
+    ],
+  },
+  {
+    specialization: 'unity-performance-optimization',
+    strongPromptPatterns: [
+      /\bunity\b/i,
+      /\bprofiler\b/i,
+      /\bgc\b/i,
+      /\ballocation\b/i,
+      /\bframe\s*time\b/i,
+      /\bfps\b/i,
+      /\bmemory\s+spike\b/i,
+      /性能优化|内存抖动|帧率|卡顿/u,
+    ],
+    promptPatterns: [
+      /\bc#\b/i,
+      /\bil2cpp\b/i,
+      /\bburst\b/i,
+      /\bmono\b/i,
+      /\bhot\s+path\b/i,
+      /unity|优化|垃圾回收/u,
+    ],
+    workspacePatterns: [
+      /unity/i,
+      /assets/i,
+      /projectsettings/i,
+      /packages/i,
+    ],
+  },
+];
+
+function countMatches(text: string, patterns: RegExp[]): number {
+  return patterns.reduce((count, pattern) => (pattern.test(text) ? count + 1 : count), 0);
+}
+
+function resolveStrictRule(profile: AgentProfile): StrictRule | null {
+  const specialization = profile.specialization?.trim();
+  if (!specialization) {
+    return null;
+  }
+  return STRICT_SPECIALIZATION_RULES.find((rule) => rule.specialization === specialization) ?? null;
+}
+
+function tryStrictAutoMount(
+  profiles: AgentProfile[],
+  prompt: string,
+  workspaceRoot: string,
+): { agentId: string; reason: string } | null {
+  const normalizedPrompt = compactText(prompt).toLowerCase();
+  if (!normalizedPrompt) {
+    return null;
+  }
+
+  const normalizedWorkspace = workspaceRoot.toLowerCase();
+  const qualified: Array<{ profile: AgentProfile; promptHits: number; pathHit: boolean }> = [];
+
+  for (const profile of profiles) {
+    const rule = resolveStrictRule(profile);
+    if (!rule) {
+      continue;
+    }
+
+    const strongHits = countMatches(normalizedPrompt, rule.strongPromptPatterns);
+    const promptHits = countMatches(normalizedPrompt, rule.promptPatterns);
+    const pathHit = rule.workspacePatterns.some((pattern) => pattern.test(normalizedWorkspace));
+
+    const strictQualified =
+      strongHits >= 2 ||
+      (strongHits >= 1 && promptHits >= 1) ||
+      (strongHits >= 1 && pathHit);
+
+    if (!strictQualified) {
+      continue;
+    }
+
+    qualified.push({ profile, promptHits: strongHits + promptHits, pathHit });
+  }
+
+  if (qualified.length !== 1) {
+    return null;
+  }
+
+  const selected = qualified[0];
+  const reasonParts = [
+    `specialization=${selected.profile.specialization ?? 'unknown'}`,
+    `prompt_signals=${selected.promptHits}`,
+  ];
+  if (selected.pathHit) {
+    reasonParts.push('workspace_signal=matched');
+  }
+
+  return {
+    agentId: selected.profile.agent_id,
+    reason: reasonParts.join(', '),
+  };
+}
+
 function readLatestLongTermSummary(sharedRoot: string, agentId: string): { path: string; summary: string; ref?: string } | null {
-  const longTermDir = join(sharedRoot, 'agents', agentId, 'memory', 'long-term');
+  const shortTermDir = join(sharedRoot, 'agents', agentId, 'memory', 'short-term');
 
   try {
-    const files = readdirSync(longTermDir).filter((file) => file.endsWith('.json')).sort();
+    const files = readdirSync(shortTermDir).filter((file) => file.endsWith('.json')).sort();
     if (files.length === 0) {
       return null;
     }
 
-    const latestPath = join(longTermDir, files.at(-1)!);
+    const latestPath = join(shortTermDir, files.at(-1)!);
     const parsed = JSON.parse(readFileSync(latestPath, 'utf8')) as {
-      summary?: string;
       object_ref?: string;
+      assistant_summary?: string | null;
+      summary?: string | null;
+      quality?: { status?: string };
     };
+
+    const summaryParts = [
+      asText(parsed.assistant_summary ?? '').trim(),
+      asText(parsed.summary ?? '').trim(),
+      parsed.quality?.status ? `quality=${parsed.quality.status}` : '',
+    ].filter(Boolean);
 
     return {
       path: latestPath,
-      summary: compactText(asText(parsed.summary ?? parsed.object_ref ?? '')),
+      summary: compactText(summaryParts.join(' | ') || asText(parsed.object_ref ?? '')),
       ref: parsed.object_ref,
     };
   } catch {
@@ -140,11 +404,10 @@ function extractCommand(input: HookInput): string {
   return '';
 }
 
-function eventKey(eventName: HookEventName, input: HookInput): string {
-  const sessionId = input.session_id ?? 'unknown-session';
-  const turnId = input.turn_id ?? input.tool_use_id ?? input.source ?? 'unknown-turn';
-  const toolName = input.tool_name ?? 'no-tool';
-  return [eventName, sessionId, turnId, toolName].join(':');
+function eventKey(eventName: HookEventName, envelope: HookEnvelope, input: HookInput): string {
+  const sessionId = envelope.session_id;
+  const turnId = envelope.turn_id ?? input.tool_use_id ?? input.source ?? 'unknown-turn';
+  return [eventName, sessionId, turnId].join(':');
 }
 
 function detectWorkspaceRoot(input: HookInput): string {
@@ -166,12 +429,13 @@ function resolveCandidateAgentId(
   workspaceRoot: string,
   stateRoot: string,
   state: SessionState,
+  agentsTimeoutMs: number,
 ): string | null {
   if (state.identity_selection_declined) {
     return null;
   }
 
-  const available = listAgents(sourceRepoRoot, sharedRoot, workspaceRoot);
+  const available = listAgents(sourceRepoRoot, sharedRoot, workspaceRoot, agentsTimeoutMs);
   const knownIds = new Set(available.map((entry) => entry.agent_id));
 
   if (state.agent_id && knownIds.has(state.agent_id)) {
@@ -192,39 +456,6 @@ function escapeRegExp(text: string): string {
 
 function trimSelectionRemainder(text: string): string {
   return text.replace(/^[\s:;,.-]+/, '').trim();
-}
-
-function buildIdentitySelectionPrompt(available: Array<{ agent_id: string; canonical_name?: string }>): string {
-  const lines = [
-    'Agent memory is not initialized for this session.',
-    'Before doing memory-assisted work, ask the user to choose an Agent Identity.',
-    'Present these options exactly once and wait for the user choice:',
-  ];
-
-  for (const [index, agent] of available.entries()) {
-    lines.push(`${index + 1}. ${agent.agent_id}${agent.canonical_name ? ` (${agent.canonical_name})` : ''}`);
-  }
-
-  lines.push('0. No identity (Not applicable Agent Identity / 不适用 Agent Identity)');
-  lines.push('Accept either a number, an exact agent_id, or "no identity".');
-  lines.push('Also accept "choice + task" in one message, for example "1 summarize the issue".');
-  lines.push('If the user has not chosen yet, do not proceed with memory-assisted task execution.');
-
-  return lines.join('\n');
-}
-
-function buildIdentitySelectionContext(available: Array<{ agent_id: string; canonical_name?: string }>): string {
-  const lines = ['Identity selection required for this session.'];
-
-  for (const [index, agent] of available.entries()) {
-    lines.push(`${index + 1}. ${agent.agent_id}${agent.canonical_name ? ` (${agent.canonical_name})` : ''}`);
-  }
-
-  lines.push('0. No identity (Not applicable Agent Identity / 不适用 Agent Identity)');
-  lines.push('Reply with a number, an exact agent_id, or "no identity".');
-  lines.push('You can also send "choice + task" in one message.');
-
-  return makeAdditionalContext(lines);
 }
 
 type ParsedSelection =
@@ -294,12 +525,12 @@ function buildMemoryContext(
   const lines = [`Mounted identity: ${agentId}`];
 
   if (latest) {
-    lines.push(`Latest long-term ref: ${latest.ref ?? latest.path}`);
+    lines.push(`Latest short-term ref: ${latest.ref ?? latest.path}`);
     if (latest.summary) {
       lines.push(`Latest summary: ${latest.summary}`);
     }
   } else {
-    lines.push('Latest long-term ref: <none>');
+    lines.push('Latest short-term ref: <none>');
   }
 
   return makeAdditionalContext(lines);
@@ -379,64 +610,30 @@ function shouldBlockCommand(command: string): string | null {
   return null;
 }
 
-function flushPendingCandidates(
-  sourceRepoRoot: string,
-  sharedRoot: string,
-  stateRoot: string,
-  workspaceRoot: string,
-  sessionId: string,
+function inputTurnKey(value: string | undefined): string {
+  const text = compactText(asText(value ?? ''), 60);
+  return text || 'none';
+}
+
+function handleAgentsFailure(
   state: SessionState,
-  agentId: string,
-  lastAssistantMessage?: string,
-): HookResponse | null {
-  const candidateLines = state.pending_long_term_candidates.map((candidate) => {
-    return `- ${candidate.signal_type}/${candidate.polarity}: ${candidate.summary} [${candidate.evidence_refs.join(', ')}]`;
-  });
-
-  if (candidateLines.length === 0 && !lastAssistantMessage) {
-    return null;
-  }
-
-  const flushLines = [
-    `[hook flush] session=${sessionId}`,
-    `agent=${agentId}`,
-    `workspace=${workspaceRoot}`,
-  ];
-
-  if (lastAssistantMessage) {
-    flushLines.push(`assistant=${lastAssistantMessage}`);
-  }
-
-  if (candidateLines.length > 0) {
-    flushLines.push('candidates:');
-    flushLines.push(...candidateLines);
-  }
-
-  const flushInput = flushLines.join('\n');
-  const result = runAgentsCommand(
-    sourceRepoRoot,
-    ['run', '--agent-id', agentId, '--input', flushInput],
-    sharedRoot,
-    workspaceRoot,
-  );
-  if (result.code !== 0) {
+  failureKey: string,
+  reason: AgentsCommandReason,
+  stderr: string,
+  stdout: string,
+  messageFactory: (reasonPrefix: string, details: string) => string,
+): HookResponse {
+  const tracked = trackFailure(state, failureKey, reason);
+  if (tracked.suppressed) {
     return {
       continue: true,
-      systemMessage: `Mounted identity ${agentId}: memory flush failed: ${compactText(result.stderr || result.stdout || 'unknown error')}`,
     };
   }
 
-  clearPendingLongTermCandidates(state);
-  state.pending_feedback = [];
-  updateLastFlush(state);
-  maybePersistState(stateRoot, workspaceRoot, sessionId, state);
-
+  const reasonPrefix = reason === 'timeout' ? 'timed out' : reason === 'spawn_error' ? 'spawn failed' : 'failed';
   return {
     continue: true,
-    hookSpecificOutput: {
-      hookEventName: 'Stop',
-      additionalContext: `Flushed memory candidates for ${agentId}.`,
-    },
+    systemMessage: messageFactory(reasonPrefix, compactText(stderr || stdout || 'unknown error')),
   };
 }
 
@@ -444,64 +641,74 @@ export function createMemoryHookDriver(options: HookDriverOptions = {}): HookDri
   const sourceRepoRoot = options.sourceRepoRoot ?? defaultSourceRepoRoot;
   const sharedRoot = resolveSharedRoot(options);
   const stateRoot = options.stateRoot ?? resolveStateRoot();
+  const agentsTimeoutMs = readAgentsTimeoutMs(options);
 
   return {
     handleSessionStart(input) {
+      const envelope = normalizeHookEnvelope(input, 'SessionStart', {
+        context: {
+          trigger_source: input.source ?? 'unknown',
+        },
+      });
       const workspaceRoot = detectWorkspaceRoot(input);
-      const sessionId = input.session_id ?? 'unknown-session';
+      const sessionId = envelope.session_id;
       const state = loadSessionState(stateRoot, workspaceRoot, sessionId);
-      const key = eventKey('SessionStart', input);
+      const key = eventKey('SessionStart', envelope, input);
+      logHookEvent(stateRoot, workspaceRoot, sessionId, {
+        event: 'session-start',
+        phase: 'received',
+        dedupe_key: key,
+      });
 
       if (!rememberEvent(state, key)) {
         return null;
       }
 
-      const agentId = resolveCandidateAgentId(sourceRepoRoot, sharedRoot, workspaceRoot, stateRoot, state);
+      let autoMountReason: string | null = null;
+      let agentId = resolveCandidateAgentId(sourceRepoRoot, sharedRoot, workspaceRoot, stateRoot, state, agentsTimeoutMs);
+      if (!agentId && !state.identity_selection_declined) {
+        const profiles = listAgentProfiles(sourceRepoRoot, sharedRoot, workspaceRoot, agentsTimeoutMs);
+        const decision = tryStrictAutoMount(profiles, asText(input.prompt ?? ''), workspaceRoot);
+        if (decision) {
+          agentId = decision.agentId;
+          autoMountReason = decision.reason;
+        }
+      }
       if (!agentId) {
-        const available = listAgents(sourceRepoRoot, sharedRoot, workspaceRoot);
         maybePersistState(stateRoot, workspaceRoot, sessionId, state);
-        return {
-          continue: true,
-          systemMessage: buildIdentitySelectionPrompt(available),
-          hookSpecificOutput: {
-            hookEventName: 'SessionStart',
-            additionalContext: buildIdentitySelectionContext(available),
-          },
-        };
+        return null;
       }
 
       markAgentId(state, agentId);
       state.last_session_start = new Date().toISOString();
-
-      const flushResponse = flushPendingCandidates(
-        sourceRepoRoot,
-        sharedRoot,
-        stateRoot,
-        workspaceRoot,
-        sessionId,
-        state,
-        agentId,
-        readLastAssistantSummary(input),
-      );
-
-      if (flushResponse && flushResponse.systemMessage) {
-        maybePersistState(stateRoot, workspaceRoot, sessionId, state);
-        return flushResponse;
-      }
 
       const verifyResult = runAgentsCommand(
         sourceRepoRoot,
         ['verify', '--agent-id', agentId],
         sharedRoot,
         workspaceRoot,
+        agentsTimeoutMs,
       );
+      logHookEvent(stateRoot, workspaceRoot, sessionId, {
+        event: 'session-start',
+        phase: 'agents_verify',
+        agent_id: agentId,
+        result_reason: verifyResult.reason,
+        result_code: verifyResult.code,
+      });
       if (verifyResult.code !== 0) {
+        const failureResponse = handleAgentsFailure(
+          state,
+          `agents-verify:session-start:${sessionId}:${agentId}`,
+          verifyResult.reason,
+          verifyResult.stderr,
+          verifyResult.stdout,
+          (reasonPrefix, details) => `Mounted identity ${agentId}: memory verify ${reasonPrefix}: ${details}`,
+        );
         maybePersistState(stateRoot, workspaceRoot, sessionId, state);
-        return {
-          continue: true,
-          systemMessage: `Mounted identity ${agentId}: memory verify failed: ${compactText(verifyResult.stderr || verifyResult.stdout || 'unknown error')}`,
-        };
+        return failureResponse;
       }
+      clearFailure(state, `agents-verify:session-start:${sessionId}:${agentId}`);
 
       const latest = readLatestLongTermSummary(sharedRoot, agentId);
       state.last_retrieval_turn = input.turn_id ?? state.last_retrieval_turn;
@@ -512,45 +719,47 @@ export function createMemoryHookDriver(options: HookDriverOptions = {}): HookDri
         continue: true,
         hookSpecificOutput: {
           hookEventName: 'SessionStart',
-          additionalContext: buildMemoryContext(agentId, latest),
+          additionalContext: makeAdditionalContext([
+            buildMemoryContext(agentId, latest),
+            autoMountReason ? `Auto-mounted by strict match: ${autoMountReason}` : '',
+          ]),
         },
       };
     },
 
     handleUserPromptSubmit(input) {
       const prompt = input.prompt ?? '';
+      const envelope = normalizeHookEnvelope(input, 'UserPromptSubmit', {
+        context: {
+          prompt_preview: compactText(prompt, 120),
+        },
+      });
       const workspaceRoot = detectWorkspaceRoot(input);
-      const sessionId = input.session_id ?? 'unknown-session';
+      const sessionId = envelope.session_id;
       const state = loadSessionState(stateRoot, workspaceRoot, sessionId);
-      const key = eventKey('UserPromptSubmit', input);
+      const key = eventKey('UserPromptSubmit', envelope, input);
+      logHookEvent(stateRoot, workspaceRoot, sessionId, {
+        event: 'user-prompt-submit',
+        phase: 'received',
+        dedupe_key: key,
+      });
 
       if (!rememberEvent(state, key)) {
         return null;
       }
 
-      const agentId = resolveCandidateAgentId(sourceRepoRoot, sharedRoot, workspaceRoot, stateRoot, state);
-      if (!agentId) {
-        const available = listAgents(sourceRepoRoot, sharedRoot, workspaceRoot);
-        const selection = parseIdentitySelection(prompt, available);
+      const boundAgentId = resolveCandidateAgentId(sourceRepoRoot, sharedRoot, workspaceRoot, stateRoot, state, agentsTimeoutMs);
+      const available = listAgents(sourceRepoRoot, sharedRoot, workspaceRoot, agentsTimeoutMs);
+      const selection = parseIdentitySelection(prompt, available);
 
-        if (selection?.kind === 'none') {
-          markIdentitySelectionDeclined(state);
-          maybePersistState(stateRoot, workspaceRoot, sessionId, state);
+      if (selection?.kind === 'none') {
+        markIdentitySelectionDeclined(state);
+        maybePersistState(stateRoot, workspaceRoot, sessionId, state);
 
-          if (selection.remainingPrompt) {
-            return {
-              continue: true,
-              systemMessage: `The user explicitly selected no identity for this session. Do not use agent memory. Continue with the remaining request: ${selection.remainingPrompt}`,
-              hookSpecificOutput: {
-                hookEventName: 'UserPromptSubmit',
-                additionalContext: 'No Agent Identity selected for this session.',
-              },
-            };
-          }
-
+        if (selection.remainingPrompt) {
           return {
             continue: true,
-            systemMessage: 'The user explicitly selected no identity for this session. Acknowledge that no Agent Identity will assist in this session and ask for the actual task.',
+            systemMessage: `The user explicitly selected no identity for this session. Do not use agent memory. Continue with the remaining request: ${selection.remainingPrompt}`,
             hookSpecificOutput: {
               hookEventName: 'UserPromptSubmit',
               additionalContext: 'No Agent Identity selected for this session.',
@@ -558,64 +767,88 @@ export function createMemoryHookDriver(options: HookDriverOptions = {}): HookDri
           };
         }
 
-        if (selection?.kind === 'agent') {
-          const verifyResult = runAgentsCommand(
-            sourceRepoRoot,
-            ['verify', '--agent-id', selection.agentId],
-            sharedRoot,
-            workspaceRoot,
-          );
-          if (verifyResult.code !== 0) {
-            maybePersistState(stateRoot, workspaceRoot, sessionId, state);
-            return {
-              continue: true,
-              systemMessage: `Identity selection failed for ${selection.agentId}: ${compactText(verifyResult.stderr || verifyResult.stdout || 'unknown error')}`,
-            };
-          }
-
-          markAgentId(state, selection.agentId);
-          state.last_retrieval_turn = input.turn_id ?? state.last_retrieval_turn;
-          state.last_inject_turn = input.turn_id ?? state.last_inject_turn;
-          maybePersistState(stateRoot, workspaceRoot, sessionId, state);
-
-          const latest = readLatestLongTermSummary(sharedRoot, selection.agentId);
-          const additionalLines = [buildMemoryContext(selection.agentId, latest)];
-          let systemMessage = `The user's leading token selected the mounted identity ${selection.agentId}.`;
-
-          if (selection.remainingPrompt) {
-            additionalLines.push(`Remaining user request: ${selection.remainingPrompt}`);
-            systemMessage = `${systemMessage} Treat the remaining request as the actual task: ${selection.remainingPrompt}`;
-          } else {
-            systemMessage = `${systemMessage} The user's message was selection-only. Confirm the mounted identity and ask for the actual task.`;
-          }
-
-          return {
-            continue: true,
-            systemMessage,
-            hookSpecificOutput: {
-              hookEventName: 'UserPromptSubmit',
-              additionalContext: makeAdditionalContext(additionalLines),
-            },
-          };
-        }
-
-        if (state.identity_selection_declined) {
-          maybePersistState(stateRoot, workspaceRoot, sessionId, state);
-          return null;
-        }
-
-        maybePersistState(stateRoot, workspaceRoot, sessionId, state);
         return {
           continue: true,
-          systemMessage: buildIdentitySelectionPrompt(available),
+          systemMessage: 'The user explicitly selected no identity for this session. Continue without memory-assisted identity support.',
           hookSpecificOutput: {
             hookEventName: 'UserPromptSubmit',
-            additionalContext: buildIdentitySelectionContext(available),
+            additionalContext: 'No Agent Identity selected for this session.',
           },
         };
       }
 
-      if (!shouldRefreshPrompt(prompt)) {
+      if (selection?.kind === 'agent') {
+        const verifyResult = runAgentsCommand(
+          sourceRepoRoot,
+          ['verify', '--agent-id', selection.agentId],
+          sharedRoot,
+          workspaceRoot,
+          agentsTimeoutMs,
+        );
+        logHookEvent(stateRoot, workspaceRoot, sessionId, {
+          event: 'user-prompt-submit',
+          phase: 'agents_verify_selection',
+          agent_id: selection.agentId,
+          result_reason: verifyResult.reason,
+          result_code: verifyResult.code,
+        });
+        if (verifyResult.code !== 0) {
+          const failureResponse = handleAgentsFailure(
+            state,
+            `agents-verify:selection:${sessionId}:${selection.agentId}`,
+            verifyResult.reason,
+            verifyResult.stderr,
+            verifyResult.stdout,
+            (reasonPrefix, details) => `Identity selection ${reasonPrefix} for ${selection.agentId}: ${details}`,
+          );
+          maybePersistState(stateRoot, workspaceRoot, sessionId, state);
+          return failureResponse;
+        }
+        clearFailure(state, `agents-verify:selection:${sessionId}:${selection.agentId}`);
+
+        markAgentId(state, selection.agentId);
+        state.last_retrieval_turn = input.turn_id ?? state.last_retrieval_turn;
+        state.last_inject_turn = input.turn_id ?? state.last_inject_turn;
+        maybePersistState(stateRoot, workspaceRoot, sessionId, state);
+
+        const latest = readLatestLongTermSummary(sharedRoot, selection.agentId);
+        const additionalLines = [buildMemoryContext(selection.agentId, latest)];
+        let systemMessage = `The user's leading token selected the mounted identity ${selection.agentId}.`;
+
+        if (selection.remainingPrompt) {
+          additionalLines.push(`Remaining user request: ${selection.remainingPrompt}`);
+          systemMessage = `${systemMessage} Treat the remaining request as the actual task: ${selection.remainingPrompt}`;
+        } else {
+          systemMessage = `${systemMessage} The user's message was selection-only. Confirm the mounted identity and ask for the actual task.`;
+        }
+
+        return {
+          continue: true,
+          systemMessage,
+          hookSpecificOutput: {
+            hookEventName: 'UserPromptSubmit',
+            additionalContext: makeAdditionalContext(additionalLines),
+          },
+        };
+      }
+
+      let agentId = boundAgentId;
+      let autoMountReason: string | null = null;
+      if (!agentId && !state.identity_selection_declined) {
+        const profiles = listAgentProfiles(sourceRepoRoot, sharedRoot, workspaceRoot, agentsTimeoutMs);
+        const decision = tryStrictAutoMount(profiles, prompt, workspaceRoot);
+        if (decision) {
+          agentId = decision.agentId;
+          autoMountReason = decision.reason;
+        }
+      }
+
+      if (!agentId) {
+        maybePersistState(stateRoot, workspaceRoot, sessionId, state);
+        return null;
+      }
+
+      if (!shouldRefreshPrompt(prompt) && !autoMountReason) {
         return null;
       }
 
@@ -627,32 +860,62 @@ export function createMemoryHookDriver(options: HookDriverOptions = {}): HookDri
         ['verify', '--agent-id', agentId],
         sharedRoot,
         workspaceRoot,
+        agentsTimeoutMs,
       );
+      logHookEvent(stateRoot, workspaceRoot, sessionId, {
+        event: 'user-prompt-submit',
+        phase: 'agents_verify',
+        agent_id: agentId,
+        result_reason: verifyResult.reason,
+        result_code: verifyResult.code,
+      });
       if (verifyResult.code !== 0) {
+        const failureResponse = handleAgentsFailure(
+          state,
+          `agents-verify:user-prompt:${sessionId}:${agentId}`,
+          verifyResult.reason,
+          verifyResult.stderr,
+          verifyResult.stdout,
+          (reasonPrefix, details) => `Mounted identity ${agentId}: memory verify ${reasonPrefix}: ${details}`,
+        );
         maybePersistState(stateRoot, workspaceRoot, sessionId, state);
-        return {
-          continue: true,
-          systemMessage: `Mounted identity ${agentId}: memory verify failed: ${compactText(verifyResult.stderr || verifyResult.stdout || 'unknown error')}`,
-        };
+        return failureResponse;
       }
+      clearFailure(state, `agents-verify:user-prompt:${sessionId}:${agentId}`);
 
       const latest = readLatestLongTermSummary(sharedRoot, agentId);
       maybePersistState(stateRoot, workspaceRoot, sessionId, state);
 
       return {
         continue: true,
+        systemMessage: autoMountReason
+          ? `Auto-mounted identity ${agentId} via strict match (${autoMountReason}).`
+          : undefined,
         hookSpecificOutput: {
           hookEventName: 'UserPromptSubmit',
-          additionalContext: buildMemoryContext(agentId, latest),
+          additionalContext: makeAdditionalContext([
+            buildMemoryContext(agentId, latest),
+            autoMountReason ? `Auto-mounted by strict match: ${autoMountReason}` : '',
+          ]),
         },
       };
     },
 
     handleStop(input) {
+      const envelope = normalizeHookEnvelope(input, 'Stop', {
+        context: {
+          has_assistant_summary: Boolean(readLastAssistantSummary(input)),
+        },
+      });
       const workspaceRoot = detectWorkspaceRoot(input);
-      const sessionId = input.session_id ?? 'unknown-session';
+      const sessionId = envelope.session_id;
       const state = loadSessionState(stateRoot, workspaceRoot, sessionId);
-      const key = eventKey('Stop', input);
+      const key = eventKey('Stop', envelope, input);
+      logHookEvent(stateRoot, workspaceRoot, sessionId, {
+        event: 'stop',
+        phase: 'received',
+        dedupe_key: key,
+      });
 
       if (!rememberEvent(state, key)) {
         return {
@@ -660,7 +923,7 @@ export function createMemoryHookDriver(options: HookDriverOptions = {}): HookDri
         };
       }
 
-      const agentId = resolveCandidateAgentId(sourceRepoRoot, sharedRoot, workspaceRoot, stateRoot, state);
+      const agentId = resolveCandidateAgentId(sourceRepoRoot, sharedRoot, workspaceRoot, stateRoot, state, agentsTimeoutMs);
       if (!agentId) {
         maybePersistState(stateRoot, workspaceRoot, sessionId, state);
         return {
@@ -670,31 +933,19 @@ export function createMemoryHookDriver(options: HookDriverOptions = {}): HookDri
 
       markAgentId(state, agentId);
       const lastAssistantMessage = readLastAssistantSummary(input);
-
-      if (state.pending_long_term_candidates.length === 0 && !lastAssistantMessage) {
-        maybePersistState(stateRoot, workspaceRoot, sessionId, state);
-        return {
-          continue: true,
-        };
+      if (lastAssistantMessage) {
+        const entry = makeFeedbackEntry(
+          sessionId,
+          `agent:${agentId}`,
+          'explicit',
+          compactText(`Assistant summary captured for ${agentId}: ${lastAssistantMessage}`),
+          [`turn:${input.turn_id ?? 'unknown-turn'}`],
+        );
+        addPendingFeedback(state, entry);
       }
 
-      const response = flushPendingCandidates(
-        sourceRepoRoot,
-        sharedRoot,
-        stateRoot,
-        workspaceRoot,
-        sessionId,
-        state,
-        agentId,
-        lastAssistantMessage || undefined,
-      );
-
-      if (response) {
-        maybePersistState(stateRoot, workspaceRoot, sessionId, state);
-        return {
-          continue: true,
-        };
-      }
+      state.pending_feedback = [];
+      updateLastFlush(state);
 
       maybePersistState(stateRoot, workspaceRoot, sessionId, state);
       return {
@@ -712,16 +963,27 @@ export function createMemoryHookDriver(options: HookDriverOptions = {}): HookDri
         return null;
       }
 
+      const envelope = normalizeHookEnvelope(input, 'PreToolUse', {
+        context: {
+          tool_name: input.tool_name ?? '',
+          command_preview: compactText(command, 120),
+        },
+      });
       const workspaceRoot = detectWorkspaceRoot(input);
-      const sessionId = input.session_id ?? 'unknown-session';
+      const sessionId = envelope.session_id;
       const state = loadSessionState(stateRoot, workspaceRoot, sessionId);
-      const key = eventKey('PreToolUse', input);
+      const key = eventKey('PreToolUse', envelope, input);
+      logHookEvent(stateRoot, workspaceRoot, sessionId, {
+        event: 'pre-tool-use',
+        phase: 'received',
+        dedupe_key: key,
+      });
 
       if (!rememberEvent(state, key)) {
         return null;
       }
 
-      const agentId = resolveCandidateAgentId(sourceRepoRoot, sharedRoot, workspaceRoot, stateRoot, state);
+      const agentId = resolveCandidateAgentId(sourceRepoRoot, sharedRoot, workspaceRoot, stateRoot, state, agentsTimeoutMs);
       if (!agentId) {
         maybePersistState(stateRoot, workspaceRoot, sessionId, state);
         return null;
@@ -759,16 +1021,27 @@ export function createMemoryHookDriver(options: HookDriverOptions = {}): HookDri
         return null;
       }
 
+      const envelope = normalizeHookEnvelope(input, 'PostToolUse', {
+        context: {
+          tool_name: input.tool_name ?? '',
+          has_tool_response: input.tool_response !== undefined,
+        },
+      });
       const workspaceRoot = detectWorkspaceRoot(input);
-      const sessionId = input.session_id ?? 'unknown-session';
+      const sessionId = envelope.session_id;
       const state = loadSessionState(stateRoot, workspaceRoot, sessionId);
-      const key = eventKey('PostToolUse', input);
+      const key = eventKey('PostToolUse', envelope, input);
+      logHookEvent(stateRoot, workspaceRoot, sessionId, {
+        event: 'post-tool-use',
+        phase: 'received',
+        dedupe_key: key,
+      });
 
       if (!rememberEvent(state, key)) {
         return null;
       }
 
-      const agentId = resolveCandidateAgentId(sourceRepoRoot, sharedRoot, workspaceRoot, stateRoot, state);
+      const agentId = resolveCandidateAgentId(sourceRepoRoot, sharedRoot, workspaceRoot, stateRoot, state, agentsTimeoutMs);
       if (!agentId) {
         maybePersistState(stateRoot, workspaceRoot, sessionId, state);
         return null;
@@ -801,7 +1074,6 @@ export function createMemoryHookDriver(options: HookDriverOptions = {}): HookDri
       );
 
       addPendingFeedback(state, entry);
-      addPendingLongTermCandidate(state, entry);
       maybePersistState(stateRoot, workspaceRoot, sessionId, state);
 
       return {
