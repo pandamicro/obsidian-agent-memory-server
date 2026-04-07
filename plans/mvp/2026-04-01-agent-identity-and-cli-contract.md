@@ -345,40 +345,7 @@ pnpm tsx src/cli.ts run --agent-id research-agent --input "summarize current con
 - 字段缺失
 - 写文件失败
 
-### 命令 3：`distill`
-
-作用：
-
-- 从 `raw-capture` 读取待处理记录
-- 使用推理模型做过滤与收敛
-- 仅把通过过滤的记录写入 `short-term`
-- 输出本轮 distill 摘要
-
-建议调用：
-
-```bash
-pnpm tsx src/cli.ts distill --agent-id research-agent --limit 20
-```
-
-最小参数：
-
-- `--agent-id`
-- `--limit`（可选，默认 20）
-
-最小输出：
-
-- 本轮扫描条数
-- 本轮写入 short-term 条数
-- 本轮跳过条数
-
-AI 环境要求（MVP）：
-
-- 默认从 `~/.codex/config.toml` 读取 `model_provider` 与 `model`
-- `OBSIDIAN_AGENT_MEMORY_SERVER_DISTILL_PROVIDER` 可覆盖 config.toml
-- 当 provider 要求 OpenAI 鉴权时需设置 `OPENAI_API_KEY`
-- 可选模型变量：`OBSIDIAN_AGENT_MEMORY_SERVER_DISTILL_MODEL`
-
-### 命令 4：`verify`
+### 命令 3：`verify`
 
 作用：
 
@@ -428,12 +395,6 @@ pnpm tsx src/cli.ts verify --agent-id research-agent
 - raw-capture 写入
 - 摘要输出
 
-### `distill` 负责
-
-- 离线过滤与模型收敛
-- short-term 写入
-- 过滤统计输出
-
 ### `verify` 负责
 
 - 结构校验
@@ -444,7 +405,6 @@ pnpm tsx src/cli.ts verify --agent-id research-agent
 
 - `init` 不负责写入短期或长期记忆
 - `run` 不负责 short-term 过滤生成
-- `distill` 不负责首次身份资产生成
 - `run` 不负责首次身份资产生成
 - `verify` 不负责修复目录或补写文件
 - `init` 不应被设计成“每个 session 先做一次”的步骤
@@ -462,7 +422,42 @@ agents/
     runs/
 ```
 
-## 五、与后续 MCP 演化的兼容性
+## 五、`projects/reve` Distill 契约
+
+从 2026-04-07 起，`distill` 从 CLI 工程拆分到独立工程 `projects/reve`，并通过 `bin/reve` 暴露入口。
+
+作用：
+
+- 从 `raw-capture` 读取待处理记录
+- 使用推理模型做过滤与收敛
+- 仅把通过过滤的记录写入 `short-term`
+- 输出本轮 distill 摘要
+
+建议调用：
+
+```bash
+bin/reve distill --agent-id research-agent --limit 20
+```
+
+最小参数：
+
+- `--agent-id`
+- `--limit`（可选，默认 20）
+
+最小输出：
+
+- 本轮扫描条数
+- 本轮写入 short-term 条数
+- 本轮跳过条数
+
+AI 环境要求（MVP）：
+
+- 默认从 `~/.codex/config.toml` 读取 `model_provider` 与 `model`
+- `OBSIDIAN_AGENT_MEMORY_SERVER_DISTILL_PROVIDER` 可覆盖 config.toml
+- 当 provider 要求 OpenAI 鉴权时需设置 `OPENAI_API_KEY`
+- 可选模型变量：`OBSIDIAN_AGENT_MEMORY_SERVER_DISTILL_MODEL`
+
+## 六、与后续 MCP 演化的兼容性
 
 这套契约的设计目标是：
 
@@ -476,17 +471,17 @@ agents/
 - CLI 保持输入输出清晰
 - 目录结构保持稳定
 
-## 六、当前建议冻结项
+## 七、当前建议冻结项
 
 建议现在冻结：
 
 - `agent_identity.json` 使用 JSON
 - 五个最小身份字段
-- CLI 采用 `init / run / distill / verify`
+- CLI 采用 `init / run / verify`
 - `run` 作为主入口
-- `distill` 作为 short-term 生成入口
+- `projects/reve distill` 作为 short-term 生成入口
 
-## 七、当前暂不冻结项
+## 八、当前暂不冻结项
 
 - 是否增加 `--root` 参数支持自定义根目录
 - 是否增加 `--force` 覆盖初始化

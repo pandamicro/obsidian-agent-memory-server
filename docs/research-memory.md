@@ -3213,3 +3213,22 @@
   - 不把 `agents/**` 与 `.DS_Store` 纳入提交
 - 假设:
   - 当前新增与修改的 hooks/cli 测试足以覆盖本轮行为变更；更细粒度回归由后续迭代补充
+
+## R-0099 Distill 实现从 CLI 拆分到独立工程 `projects/reve`
+
+- 日期: 2026-04-07
+- 目标: 保持 `projects/cli` 纯净，避免 distill/总结实现受 Agent 运行环境耦合干扰
+- 输入:
+  - 用户明确要求：`run/verify` 留在 CLI，`distill` 独立到 `projects/reve`
+  - 用户要求 `reve` 具备可外部周期调用能力，并可在 stop hook 中主动触发
+- 动作:
+  - 形成迁移决策：
+    - CLI 移除 `distill` 逻辑与命令
+    - 新增 `projects/reve` 承载 `distill` 与后续长期总结能力
+    - 新增仓库入口 `bin/reve`
+  - 将上述决策追加到 MVP 计划与 CLI 合同文档
+- 决策:
+  - 本轮采用“完全拆分”路径，而非 CLI 代理过渡
+  - hooks 侧优先支持 `bin/reve` 调用，保持 fail-open
+- 假设:
+  - 现有 `raw_capture`/`short-term` 文件契约无需修改即可完成迁移

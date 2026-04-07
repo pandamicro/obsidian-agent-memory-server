@@ -70,6 +70,21 @@ CLI 的详细功能边界、命令职责和使用说明，统一以：
 
 为准。
 
+## Distill Boundary Update (2026-04-07)
+
+为保持 `projects/cli` 的职责纯净，MVP 决策更新如下：
+
+- `projects/cli` 仅保留身份与采集链路（`init/run/verify/list/mount`）
+- `distill` 与后续长期记忆总结逻辑迁移到独立工程 `projects/reve`
+- 新增独立入口 `bin/reve`，用于：
+  - 外部周期任务调用
+  - hooks 的可选 stop 阶段主动触发（fail-open）
+
+这意味着：
+
+- short-term 生成仍是 `raw-capture -> distill -> short-term`
+- 但 `distill` 不再属于 CLI 工程内部实现
+
 ## Minimal Runtime Shape
 
 推荐第一版运行形态：
