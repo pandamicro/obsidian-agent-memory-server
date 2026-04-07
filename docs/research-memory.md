@@ -3351,3 +3351,30 @@
 - 结论:
   - 当前阻塞点已从“鉴权缺失”转为“provider 返回空文本内容”
   - distill 代码路径可达，但因缺少可解析模型输出被判定为 skipped
+
+## R-0105 通过 responses 流式回退修复空输出，并在真实 provider 生成有效 short-term
+
+- 日期: 2026-04-07
+- 目标: 在真实 provider 下消除 `skipped`，稳定产出可用 short-term
+- 输入:
+  - 已确认 `v1/responses` 非流式返回 `status=completed` 但 `output=[]`
+  - 同一 provider 在 `stream=true` 下存在 `response.output_text.done` 事件且包含文本
+- 动作:
+  - 在 `projects/reve/src/cli.ts` 中增强 `distillWithResponsesApi`：
+    - 优先走原有非流式
+    - 若缺少可解析输出，则自动回退到 `stream=true`
+    - 解析 SSE `data:` 行并提取 `response.output_text.done.text`
+  - 使用真实 provider 复测：
+    1) `bin/agents run --agent-id research-agent --input "..."`
+    2) `bin/reve distill --agent-id research-agent --limit 5`
+  - 再用结构化 `hook flush` 输入（含 evidence refs）复测质量
+- 发现:
+  - 真实 provider 下已从 `skipped` 转为实际写入
+  - 新产物示例：
+    - `source_message_id = e2278baa-2284-48e7-9876-3f7699324c5f`
+    - `model_provider = codex`
+    - `model_name = gpt-5.2`
+    - `quality.status = pass`
+    - `summary = \"Distill succeeded with provider codex.\"`
+- 结论:
+  - 当前链路已可在真实 AI 环境生成“正确且可评估”的 short-term memory

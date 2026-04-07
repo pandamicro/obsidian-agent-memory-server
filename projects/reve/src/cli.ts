@@ -333,69 +333,121 @@ async function distillWithResponsesApi(raw: RawCaptureEvent, runtime: DistillPro
     ? `${normalizedBase}/v1/responses`
     : `${normalizedBase}/v1/responses`;
 
+  const requestBody = {
+    model: runtime.model,
+    input: prompt,
+    text: {
+      format: {
+        type: 'json_schema',
+        name: 'short_term_memory_filter',
+        schema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            event_type: { type: 'string' },
+            object_kind: { type: 'string' },
+            signal_type: { type: 'string' },
+            polarity: { type: 'string' },
+            summary: { type: 'string' },
+            evidence_refs: { type: 'array', items: { type: 'string' } },
+            quality: {
+              type: 'object',
+              additionalProperties: false,
+              properties: {
+                observable: { type: 'boolean' },
+                linkable: { type: 'boolean' },
+                evaluatable: { type: 'boolean' },
+                distillable: { type: 'boolean' },
+                status: { type: 'string' },
+                reasons: { type: 'array', items: { type: 'string' } },
+              },
+              required: ['observable', 'linkable', 'evaluatable', 'distillable', 'status', 'reasons'],
+            },
+            confidence: { type: 'number' },
+            parser_reason: { type: 'string' },
+          },
+          required: [
+            'event_type',
+            'object_kind',
+            'signal_type',
+            'polarity',
+            'summary',
+            'evidence_refs',
+            'quality',
+            'confidence',
+            'parser_reason',
+          ],
+        },
+      },
+    },
+  };
+
   const response = await fetch(endpoint, {
     method: 'POST',
     headers,
-    body: JSON.stringify({
-      model: runtime.model,
-      input: prompt,
-      text: {
-        format: {
-          type: 'json_schema',
-          name: 'short_term_memory_filter',
-          schema: {
-            type: 'object',
-            additionalProperties: false,
-            properties: {
-              event_type: { type: 'string' },
-              object_kind: { type: 'string' },
-              signal_type: { type: 'string' },
-              polarity: { type: 'string' },
-              summary: { type: 'string' },
-              evidence_refs: { type: 'array', items: { type: 'string' } },
-              quality: {
-                type: 'object',
-                additionalProperties: false,
-                properties: {
-                  observable: { type: 'boolean' },
-                  linkable: { type: 'boolean' },
-                  evaluatable: { type: 'boolean' },
-                  distillable: { type: 'boolean' },
-                  status: { type: 'string' },
-                  reasons: { type: 'array', items: { type: 'string' } },
-                },
-                required: ['observable', 'linkable', 'evaluatable', 'distillable', 'status', 'reasons'],
-              },
-              confidence: { type: 'number' },
-              parser_reason: { type: 'string' },
-            },
-            required: [
-              'event_type',
-              'object_kind',
-              'signal_type',
-              'polarity',
-              'summary',
-              'evidence_refs',
-              'quality',
-              'confidence',
-              'parser_reason',
-            ],
-          },
-        },
-      },
-    }),
+    body: JSON.stringify(requestBody),
   });
 
   if (!response.ok) {
     throw new Error(`Distill failed (${runtime.provider}): ${response.status} ${response.statusText}`);
   }
 
-  const parsedResponse = await response.json() as { output_text?: string };
-  if (!parsedResponse.output_text) {
-    throw new Error('OpenAI distill response missing output_text');
+  const parsedResponse = await response.json() as {
+    output_text?: string;
+    output?: Array<{
+      type?: string;
+      content?: Array<{ type?: string; text?: string }>;
+    }>;
+  };
+
+  let outputText = parsedResponse.output_text?.trim() ?? '';
+  if (!outputText && Array.isArray(parsedResponse.output)) {
+    for (const item of parsedResponse.output) {
+      if (item.type !== 'message' || !Array.isArray(item.content)) continue;
+      for (const part of item.content) {
+        if (part.type === 'output_text' && typeof part.text === 'string' && part.text.trim()) {
+          outputText = part.text.trim();
+          break;
+        }
+      }
+      if (outputText) break;
+    }
   }
 
-  return JSON.parse(parsedResponse.output_text) as DistilledShortTerm;
+  if (!outputText) {
+    const streamResponse = await fetch(endpoint, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        ...requestBody,
+        stream: true,
+      }),
+    });
+    if (!streamResponse.ok) {
+      throw new Error(`Distill stream fallback failed (${runtime.provider}): ${streamResponse.status} ${streamResponse.statusText}`);
+    }
+    const streamBody = await streamResponse.text();
+    for (const line of streamBody.split('\n')) {
+      if (!line.startsWith('data: ')) continue;
+      let event: unknown;
+      try {
+        event = JSON.parse(line.slice(6));
+      } catch {
+        continue;
+      }
+      if (!event || typeof event !== 'object') continue;
+      const typed = event as { type?: string; text?: string };
+      if (typed.type === 'response.output_text.done' && typeof typed.text === 'string' && typed.text.trim()) {
+        outputText = typed.text.trim();
+      }
+    }
+  }
+
+  if (!outputText) {
+    throw new Error('OpenAI distill response missing output text in both normal and stream modes');
+  }
+
+  return JSON.parse(outputText) as DistilledShortTerm;
 }
 
 async function distillWithMock(raw: RawCaptureEvent): Promise<DistilledShortTerm> {
