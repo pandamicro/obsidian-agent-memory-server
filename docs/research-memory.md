@@ -3276,3 +3276,31 @@
     1) `OBSIDIAN_AGENT_MEMORY_SERVER_DISTILL_MODEL`
     2) `~/.codex/config.toml` 的 `model`
     3) 代码默认值 `gpt-5.2`
+
+## R-0102 旧 short-term 向 raw_capture 迁移与真实 provider 连通性验证
+
+- 日期: 2026-04-07
+- 目标:
+  - 将过时 short-term 文档尽量转为 `raw_capture`
+  - 使用真实 provider（非 mock）验证 reve distill 连通性
+- 输入:
+  - 用户要求：不要用 mock，验证真实 agent 环境连通性
+  - 当前历史数据：`agents/*/memory/short-term/*.json` 旧格式（含 `input`，无 `source_message_id`）
+- 动作:
+  - 新增迁移脚本：`scripts/migrate-legacy-short-term-to-raw-capture.mjs`
+  - dry-run 与实跑结果一致：
+    - `agentic-memory-expert`: 48 条
+    - `research-agent`: 1 条
+    - `unity-optimization-agent`: 8 条
+    - 共 57 条旧 short-term 生成对应 raw_capture
+  - 真实 provider 连通性验证：
+    - 默认 provider 读取到 `codex`（`~/.codex/config.toml`）
+    - `requires_openai_auth = true`
+    - 新增一条 raw_capture 后执行 `bin/reve distill`（不使用 mock）
+- 发现:
+  - `bin/reve distill` 返回 `Distilled short-term records: 0 / Skipped raw captures: 1`
+  - 运行环境 `OPENAI_API_KEY` 未设置（长度 0）
+  - 网络到 provider base_url 可达（`/v1/models` 返回 HTTP 401）
+- 结论:
+  - 真实链路可达网络层，当前阻塞点是鉴权凭据缺失，而非本地 distill 逻辑
+  - 在未注入有效 key 前，真实 provider 路径会被计为 skipped
