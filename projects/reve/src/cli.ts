@@ -1,6 +1,6 @@
 import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
 import { readFileSync, realpathSync } from 'node:fs';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, createHash } from 'node:crypto';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 
@@ -122,6 +122,7 @@ type Learning = {
   quality: LearningQuality;
   observed_at: string;
   consolidation_run_id: string;
+  fingerprint: string;
 };
 
 const CONSOLIDATION_STATUSES: ReadonlySet<ConsolidationStatus> = new Set([
@@ -955,6 +956,43 @@ async function readShortTermSourceIds(shortTermDir: string): Promise<Set<string>
   return sourceIds;
 }
 
+function normalizeSourceEpisodeIds(ids: string[]): string[] {
+  return [...ids].sort();
+}
+
+function computeLearningFingerprintFromIds(sortedIds: string[]): string {
+  return createHash('sha256').update(sortedIds.join('|'), 'utf8').digest('hex');
+}
+
+async function readExistingLearningFingerprints(longTermDir: string, agentId: string): Promise<Set<string>> {
+  const fingerprints = new Set<string>();
+  if (!longTermDir) {
+    return fingerprints;
+  }
+  const files = (await readdir(longTermDir)).filter((file) => file.endsWith('.json')).sort();
+  for (const file of files) {
+    const path = join(longTermDir, file);
+    try {
+      const content = await readFile(path, 'utf8');
+      let parsed: Partial<Learning>;
+      try {
+        parsed = JSON.parse(content) as Partial<Learning>;
+      } catch {
+        continue;
+      }
+      if (parsed.identity_id !== agentId) {
+        continue;
+      }
+      if (typeof parsed.fingerprint === 'string' && parsed.fingerprint.length > 0) {
+        fingerprints.add(parsed.fingerprint);
+      }
+    } catch (error) {
+      throw new Error(`Failed to read learning fingerprint from ${path}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  return fingerprints;
+}
+
 async function handleDistill(agentId: string, limitRaw: string | undefined, rootDir: string) {
   const agentRoot = join(rootDir, 'agents', agentId);
   const rawCaptureDir = join(agentRoot, 'memory', 'raw-capture');
@@ -1049,6 +1087,8 @@ async function handleConsolidate(agentId: string, limitRaw: string | undefined, 
   const batchSize = parsePositiveInteger('batch-size', batchSizeRaw, 10);
   const runtime = readConsolidationRuntimeConfig();
 
+  const existingFingerprints = await readExistingLearningFingerprints(longTermDir, identity.agent_id);
+
   const episodes = await readShortTermEpisodes(shortTermDir);
   const validEpisodes = episodes.filter((item) => {
     const value = item.value;
@@ -1087,8 +1127,17 @@ async function handleConsolidate(agentId: string, limitRaw: string | undefined, 
     const response = validateConsolidationModelResponse(
       await consolidateBatch(episodeBatch, runtime, identity.agent_id),
     );
-    statusCounts[response.status] += 1;
     if (response.status === 'learning_created') {
+      const normalizedSourceIds = normalizeSourceEpisodeIds(response.learning.source_episode_ids);
+      if (normalizedSourceIds.length === 0) {
+        throw new Error('Consolidation learning_created response must include at least one source episode id');
+      }
+      const fingerprint = computeLearningFingerprintFromIds(normalizedSourceIds);
+      if (existingFingerprints.has(fingerprint)) {
+        continue;
+      }
+      existingFingerprints.add(fingerprint);
+      statusCounts.learning_created += 1;
       const learningObservedAt = createTimestamp();
       const learningStorageId = randomUUID();
       const learningRecord: Learning = {
@@ -1097,7 +1146,7 @@ async function handleConsolidate(agentId: string, limitRaw: string | undefined, 
         identity_id: identity.agent_id,
         object_kind: 'learning',
         object_ref: response.learning.object_ref,
-        source_episode_ids: response.learning.source_episode_ids,
+        source_episode_ids: normalizedSourceIds,
         summary: response.learning.summary,
         applicability: response.learning.applicability,
         failure_conditions: response.learning.failure_conditions,
@@ -1106,11 +1155,14 @@ async function handleConsolidate(agentId: string, limitRaw: string | undefined, 
         quality: response.learning.quality,
         observed_at: learningObservedAt,
         consolidation_run_id: runId,
+        fingerprint,
       };
       const learningPath = join(longTermDir, `${learningObservedAt.replaceAll(':', '-')}-${learningStorageId}.json`);
       await writeJsonFile(learningPath, learningRecord);
       learningRecords += 1;
+      continue;
     }
+    statusCounts[response.status] += 1;
   }
 
   const runSummary = {

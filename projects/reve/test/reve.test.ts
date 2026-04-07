@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, readFile, readdir, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rename, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { createHash } from 'node:crypto';
 import test from 'node:test';
 
 const revePath = resolve(fileURLToPath(new URL('../src/cli.ts', import.meta.url)));
@@ -525,4 +526,178 @@ test('consolidate bins episodes by fixed windows respecting limit and batch size
     assert.deepEqual(learningRecords[i].source_episode_ids, expectedBatches[i]);
     assert.equal(learningRecords[i].consolidation_run_id, runSummary.run_id);
   }
+});
+
+test('consolidate learning is idempotent even when source episodes reorder on disk', async () => {
+  const workspaceRoot = await mkdtemp(join(tmpdir(), 'agent-reve-consolidate-idempotent-'));
+  const sharedRoot = await mkdtemp(join(tmpdir(), 'agent-reve-consolidate-idempotent-shared-'));
+  const sharedEnv = {
+    OBSIDIAN_AGENT_MEMORY_SERVER_SHARED_ROOT: sharedRoot,
+  };
+  const consolidateEnv = {
+    ...sharedEnv,
+    OBSIDIAN_AGENT_MEMORY_SERVER_CONSOLIDATE_PROVIDER: 'mock',
+    OBSIDIAN_AGENT_MEMORY_SERVER_CONSOLIDATE_MODEL: 'gpt-5.2',
+  };
+
+  assert.equal((await runLauncher(['init', '--agent-id', 'research-agent'], workspaceRoot, sharedEnv)).code, 0);
+
+  const agentRoot = join(sharedRoot, 'agents', 'research-agent');
+  const shortTermDir = join(agentRoot, 'memory', 'short-term');
+  const longTermDir = join(agentRoot, 'memory', 'long-term');
+  const runsDir = join(agentRoot, 'runs');
+  await mkdir(shortTermDir, { recursive: true });
+
+  const episodeEntries = [
+    {
+      message_id: 'learning-episode-a',
+      evidence_refs: ['evidence-a'],
+      filename: 'learning-episode-a.json',
+    },
+    {
+      message_id: 'learning-episode-b',
+      evidence_refs: ['evidence-b'],
+      filename: 'learning-episode-b.json',
+    },
+    {
+      message_id: 'learning-episode-c',
+      evidence_refs: ['evidence-c'],
+      filename: 'learning-episode-c.json',
+    },
+  ];
+  for (const entry of episodeEntries) {
+    const episode = {
+      schema_version: '1',
+      message_id: entry.message_id,
+      identity_id: 'research-agent',
+      object_kind: 'episode',
+      event_type: 'captured',
+      summary: `Summary for ${entry.message_id}`,
+      evidence_refs: entry.evidence_refs,
+    };
+    await writeFile(join(shortTermDir, entry.filename), `${JSON.stringify(episode, null, 2)}\n`, 'utf8');
+  }
+
+  const consolidateArgs = ['consolidate', '--agent-id', 'research-agent', '--limit', '10', '--batch-size', '5'];
+  assert.equal((await runReve(consolidateArgs, workspaceRoot, consolidateEnv)).code, 0);
+
+  const longTermFiles = await readdir(longTermDir);
+  assert.equal(longTermFiles.length, 1);
+  const learningPath = join(longTermDir, longTermFiles[0]!);
+  const initialLearning = JSON.parse(await readFile(learningPath, 'utf8'));
+  const sortedIds = episodeEntries.map((entry) => entry.message_id).sort();
+  assert.deepEqual(initialLearning.source_episode_ids, sortedIds);
+  const expectedFingerprint = createHash('sha256').update(sortedIds.join('|'), 'utf8').digest('hex');
+  assert.equal(initialLearning.fingerprint, expectedFingerprint);
+
+  await rename(join(shortTermDir, 'learning-episode-a.json'), join(shortTermDir, 'z-learning-episode-a.json'));
+  await rename(join(shortTermDir, 'learning-episode-b.json'), join(shortTermDir, 'a-learning-episode-b.json'));
+  await rename(join(shortTermDir, 'learning-episode-c.json'), join(shortTermDir, 'm-learning-episode-c.json'));
+
+  assert.equal((await runReve(consolidateArgs, workspaceRoot, consolidateEnv)).code, 0);
+
+  const finalLongTermFiles = await readdir(longTermDir);
+  assert.equal(finalLongTermFiles.length, 1);
+  const finalLearning = JSON.parse(await readFile(learningPath, 'utf8'));
+  assert.equal(finalLearning.fingerprint, expectedFingerprint);
+  assert.deepEqual(finalLearning.source_episode_ids, sortedIds);
+
+  const runFiles = (await readdir(runsDir)).sort();
+  assert.equal(runFiles.length, 2);
+});
+
+test('consolidate no_learning batches can be retried once new evidence arrives', async () => {
+  const workspaceRoot = await mkdtemp(join(tmpdir(), 'agent-reve-consolidate-no-learning-retry-'));
+  const sharedRoot = await mkdtemp(join(tmpdir(), 'agent-reve-consolidate-no-learning-retry-shared-'));
+  const sharedEnv = {
+    OBSIDIAN_AGENT_MEMORY_SERVER_SHARED_ROOT: sharedRoot,
+  };
+  const consolidateEnv = {
+    ...sharedEnv,
+    OBSIDIAN_AGENT_MEMORY_SERVER_CONSOLIDATE_PROVIDER: 'mock',
+    OBSIDIAN_AGENT_MEMORY_SERVER_CONSOLIDATE_MODEL: 'gpt-5.2',
+  };
+
+  assert.equal((await runLauncher(['init', '--agent-id', 'research-agent'], workspaceRoot, sharedEnv)).code, 0);
+
+  const agentRoot = join(sharedRoot, 'agents', 'research-agent');
+  const shortTermDir = join(agentRoot, 'memory', 'short-term');
+  const longTermDir = join(agentRoot, 'memory', 'long-term');
+  const runsDir = join(agentRoot, 'runs');
+  await mkdir(shortTermDir, { recursive: true });
+
+  const weakEpisodes = [
+    {
+      message_id: 'weak-retry-1',
+      summary: '',
+      evidence_refs: [] as string[],
+    },
+    {
+      message_id: 'weak-retry-2',
+      summary: '',
+      evidence_refs: [] as string[],
+    },
+  ];
+  for (const episode of weakEpisodes) {
+    const entry = {
+      schema_version: '1',
+      message_id: episode.message_id,
+      identity_id: 'research-agent',
+      object_kind: 'episode',
+      event_type: 'captured',
+      summary: episode.summary,
+      evidence_refs: episode.evidence_refs,
+    };
+    await writeFile(join(shortTermDir, `${episode.message_id}.json`), `${JSON.stringify(entry, null, 2)}\n`, 'utf8');
+  }
+
+  const consolidateArgs = ['consolidate', '--agent-id', 'research-agent', '--limit', '10', '--batch-size', '5'];
+  assert.equal((await runReve(consolidateArgs, workspaceRoot, consolidateEnv)).code, 0);
+
+  const firstRunFiles = await readdir(runsDir);
+  assert.equal(firstRunFiles.length, 1);
+  const firstRunSummary = JSON.parse(await readFile(join(runsDir, firstRunFiles[0]!), 'utf8'));
+  assert.equal(firstRunSummary.learning_created, 0);
+  assert(firstRunSummary.no_learning > 0);
+  assert.equal(firstRunSummary.episodes_scanned, weakEpisodes.length);
+
+  const longTermFiles = await readdir(longTermDir);
+  assert.equal(longTermFiles.length, 0);
+
+  const newEpisodes = [
+    {
+      message_id: 'retry-episode-1',
+      summary: 'Adds new evidence',
+      evidence_refs: ['evidence-retry-1'],
+    },
+    {
+      message_id: 'retry-episode-2',
+      summary: 'More supporting evidence',
+      evidence_refs: ['evidence-retry-2'],
+    },
+  ];
+  for (const episode of newEpisodes) {
+    const entry = {
+      schema_version: '1',
+      message_id: episode.message_id,
+      identity_id: 'research-agent',
+      object_kind: 'episode',
+      event_type: 'captured',
+      summary: episode.summary,
+      evidence_refs: episode.evidence_refs,
+    };
+    await writeFile(join(shortTermDir, `${episode.message_id}.json`), `${JSON.stringify(entry, null, 2)}\n`, 'utf8');
+  }
+
+  assert.equal((await runReve(consolidateArgs, workspaceRoot, consolidateEnv)).code, 0);
+
+  const allRunFiles = await readdir(runsDir);
+  const newRunFiles = allRunFiles.filter((file) => !firstRunFiles.includes(file));
+  assert.equal(newRunFiles.length, 1);
+  const retrySummary = JSON.parse(await readFile(join(runsDir, newRunFiles[0]!), 'utf8'));
+  assert.equal(retrySummary.learning_created, 1);
+  assert.equal(retrySummary.no_learning, 0);
+
+  const longTermFilesAfterRetry = await readdir(longTermDir);
+  assert.equal(longTermFilesAfterRetry.length, 1);
 });
