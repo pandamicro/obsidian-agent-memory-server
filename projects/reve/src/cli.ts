@@ -70,6 +70,14 @@ type DistillProviderRuntime = {
   requiresOpenAIAuth: boolean;
 };
 
+type ShortTermEpisode = {
+  schema_version?: string;
+  message_id?: string;
+  object_ref?: string;
+  identity_id?: string;
+  object_kind?: string;
+};
+
 function resolveStorageRoot() {
   return (
     process.env.OBSIDIAN_AGENT_MEMORY_SERVER_SHARED_ROOT ??
@@ -117,6 +125,18 @@ function createTimestamp() {
 
 async function writeJsonFile(path: string, value: unknown) {
   await writeFile(path, `${JSON.stringify(value, null, 2)}\n`, 'utf8');
+}
+
+function parsePositiveInteger(optionName: string, raw: string | undefined, fallback: number): number {
+  const rawValue = (raw ?? `${fallback}`).trim();
+  if (!/^[0-9]+$/.test(rawValue)) {
+    throw new Error(`Invalid --${optionName} value: ${raw ?? '<missing>'}`);
+  }
+  const parsed = Number.parseInt(rawValue, 10);
+  if (parsed <= 0) {
+    throw new Error(`Invalid --${optionName} value: ${raw ?? '<missing>'}`);
+  }
+  return parsed;
 }
 
 async function readAgentScope(agentId: string, rootDir: string): Promise<AgentScope | null> {
@@ -504,6 +524,25 @@ async function readRawCaptureEvents(rawCaptureDir: string): Promise<Array<{ path
   return events;
 }
 
+async function readShortTermEpisodes(shortTermDir: string): Promise<Array<{ path: string; value: ShortTermEpisode }>> {
+  const files = (await readdir(shortTermDir)).filter((file) => file.endsWith('.json')).sort();
+  const episodes: Array<{ path: string; value: ShortTermEpisode }> = [];
+  for (const file of files) {
+    const path = join(shortTermDir, file);
+    const content = await readFile(path, 'utf8');
+    try {
+      episodes.push({
+        path,
+        value: JSON.parse(content) as ShortTermEpisode,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new Error(`Failed to parse short-term episode at ${path}: ${message}`);
+    }
+  }
+  return episodes;
+}
+
 async function readShortTermSourceIds(shortTermDir: string): Promise<Set<string>> {
   const files = (await readdir(shortTermDir)).filter((file) => file.endsWith('.json')).sort();
   const sourceIds = new Set<string>();
@@ -529,10 +568,7 @@ async function handleDistill(agentId: string, limitRaw: string | undefined, root
   await mkdir(shortTermDir, { recursive: true });
   await mkdir(runsDir, { recursive: true });
 
-  const maxItems = Number.parseInt(limitRaw ?? '20', 10);
-  if (!Number.isInteger(maxItems) || maxItems <= 0) {
-    throw new Error(`Invalid --limit value: ${limitRaw ?? '<missing>'}`);
-  }
+  const maxItems = parsePositiveInteger('limit', limitRaw, 20);
 
   const allRaw = await readRawCaptureEvents(rawCaptureDir);
   const processedSourceIds = await readShortTermSourceIds(shortTermDir);
@@ -600,6 +636,75 @@ async function handleDistill(agentId: string, limitRaw: string | undefined, root
   console.log(`Skipped raw captures: ${skippedCount}`);
 }
 
+async function handleConsolidate(agentId: string, limitRaw: string | undefined, batchSizeRaw: string | undefined, rootDir: string) {
+  const agentRoot = join(rootDir, 'agents', agentId);
+  const shortTermDir = join(agentRoot, 'memory', 'short-term');
+  const longTermDir = join(agentRoot, 'memory', 'long-term');
+  const runsDir = join(agentRoot, 'runs');
+
+  const identity = await readIdentity(agentId, rootDir);
+  await mkdir(shortTermDir, { recursive: true });
+  await mkdir(longTermDir, { recursive: true });
+  await mkdir(runsDir, { recursive: true });
+
+  const limit = parsePositiveInteger('limit', limitRaw, 20);
+  const batchSize = parsePositiveInteger('batch-size', batchSizeRaw, 10);
+
+  const episodes = await readShortTermEpisodes(shortTermDir);
+  const validEpisodes = episodes.filter((item) => {
+    const value = item.value;
+    if (value.object_kind !== 'episode') {
+      return false;
+    }
+    if (value.identity_id !== agentId) {
+      return false;
+    }
+    if (!value.message_id && !value.object_ref) {
+      return false;
+    }
+    return true;
+  });
+  const selected = validEpisodes.slice(0, limit);
+  const sourceEpisodeIds = Array.from(new Set(
+    selected.map((item) => (item.value.message_id ?? item.value.object_ref)!),
+  ));
+
+  const observedAt = createTimestamp();
+  let learningWritten = false;
+  if (selected.length > 0) {
+    const learningId = randomUUID();
+    const learningRecord = {
+      schema_version: '1',
+      learning_id: learningId,
+      object_kind: 'learning',
+      identity_id: identity.agent_id,
+      source_episode_ids: sourceEpisodeIds,
+      observed_at: observedAt,
+    };
+    const learningPath = join(longTermDir, `${observedAt.replaceAll(':', '-')}-${learningId}.json`);
+    await writeJsonFile(learningPath, learningRecord);
+    learningWritten = true;
+  }
+
+  const runId = randomUUID();
+  const runSummary = {
+    run_id: runId,
+    agent_id: identity.agent_id,
+    consolidate_source: 'short-term',
+    selected: selected.length,
+    limit,
+    batch_size: batchSize,
+    observed_at: observedAt,
+  };
+  const runSummaryPath = join(runsDir, `${observedAt.replaceAll(':', '-')}-${runId}.json`);
+  await writeJsonFile(runSummaryPath, runSummary);
+
+  console.log(`Learning records: ${learningWritten ? 1 : 0}`);
+  console.log(`Episodes consolidated: ${selected.length}`);
+  console.log(`Limit: ${limit}`);
+  console.log(`Batch size: ${batchSize}`);
+}
+
 async function main() {
   const { command, options } = parseArgs(process.argv.slice(2));
   const rootDir = resolveStorageRoot();
@@ -612,6 +717,16 @@ async function main() {
     }
     await assertAgentVisible(agentId, rootDir, workspaceRoot);
     await handleDistill(agentId, options.get('limit'), rootDir);
+    return;
+  }
+
+  if (command === 'consolidate') {
+    const agentId = options.get('agent-id');
+    if (!agentId) {
+      throw new Error('Missing required option: --agent-id');
+    }
+    await assertAgentVisible(agentId, rootDir, workspaceRoot);
+    await handleConsolidate(agentId, options.get('limit'), options.get('batch-size'), rootDir);
     return;
   }
 
