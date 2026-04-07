@@ -3326,3 +3326,28 @@
     - 产物显示 `model_provider=mock`、`model_name=gpt-5.2`
 - 结论:
   - env file 已能在 launcher 层生效并影响 distill 运行时配置解析
+
+## R-0104 真实 AI 环境连通性复测：鉴权通过但 provider 返回空输出
+
+- 日期: 2026-04-07
+- 目标: 在用户填充 env 后，验证真实 provider 路径是否可产出 short-term
+- 输入:
+  - `.env.agent-memory` 已配置：
+    - `OBSIDIAN_AGENT_MEMORY_SERVER_DISTILL_PROVIDER=codex`
+    - `OBSIDIAN_AGENT_MEMORY_SERVER_DISTILL_MODEL=gpt-5.2`
+    - `OPENAI_API_KEY` 已填充
+- 动作:
+  - 执行真实链路（非 mock）：
+    1) `bin/agents run --agent-id research-agent --input "..."`
+    2) `bin/reve distill --agent-id research-agent --limit 5`
+  - 补充连通性探针：
+    - `GET https://gmn.chuangzuoli.com/v1/models`（带 Authorization）
+    - `POST https://gmn.chuangzuoli.com/v1/responses`（简单输入）
+    - `POST https://gmn.chuangzuoli.com/v1/chat/completions`
+- 发现:
+  - `v1/models` 返回 `HTTP 200`，说明 key 与网络可用
+  - `v1/responses` 与 `v1/chat/completions` 均返回 `200`，但响应里 `output`/`message.content` 为空
+  - `bin/reve distill` 结果：`Distilled short-term records: 0`, `Skipped raw captures: 1`
+- 结论:
+  - 当前阻塞点已从“鉴权缺失”转为“provider 返回空文本内容”
+  - distill 代码路径可达，但因缺少可解析模型输出被判定为 skipped
