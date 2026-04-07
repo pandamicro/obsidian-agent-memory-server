@@ -3378,3 +3378,176 @@
     - `summary = \"Distill succeeded with provider codex.\"`
 - 结论:
   - 当前链路已可在真实 AI 环境生成“正确且可评估”的 short-term memory
+
+## R-0106 MVP2 预研：reve 需要从单次 distill 进化为后台 consolidation driver
+
+- 日期: 2026-04-07
+- 目标: 为 mvp2 的 `raw_capture -> short-term -> long-term` 完整驱动器确定问题边界
+- 输入:
+  - 仓库契约：
+    - `docs/portable-agent-contract/dynamic-memory.md`
+    - `docs/portable-agent-contract/dynamic-memory/memory-distillation.md`
+    - `docs/portable-agent-contract/dynamic-memory/long-term-memory-index.md`
+  - Vault 研究：
+    - `30_研究/ClaudeCode/ClaudeCode.md`
+  - 当前实现：
+    - `projects/reve/src/cli.ts`
+- 发现:
+  - 契约层已经明确对象分层：
+    - `Episode`：压缩证据层
+    - `Learning`：跨案例稳定经验层
+    - `Behavior Delta`：可执行行为增量
+  - 当前 `reve` 只实现了 `raw_capture -> short-term(Episode)` 的单对象生成
+  - 缺失的核心不只是“long-term 落盘”，而是：
+    - consolidation gate
+    - 批次选择器
+    - `Episode -> Learning` 聚合规则
+    - 失败回滚与幂等
+    - 后台运行与可观测
+  - Claude Code 的 dreaming 对 mvp2 最有价值的不是 prompt 文案，而是控制语义：
+    - stop-hook 触发但后台执行
+    - 多重 gate（enabled/time/session/lock）
+    - fork 子代理执行 consolidation
+    - lock 同时承担互斥与时间基线
+    - 任务态/UI/analytics 三层可观测
+- 初步判断:
+  - mvp2 若直接做到 `Behavior Delta`，范围会明显超出“驱动器和蒸馏流程跑通”
+  - 更合理的最小闭环是：
+    - `raw_capture -> short-term(Episode) -> long-term(Learning)`
+    - `Behavior Delta` 先保留接口与对象占位，不纳入第一轮可执行目标
+
+## R-0107 MVP2 设计约束补充：长期产物宜先落在 `Learning`，驱动器语义借鉴 Claude Code dreaming
+
+- 日期: 2026-04-07
+- 目标: 基于契约文档与 Claude Code dreaming 研究，进一步收敛 `reve` 在 mvp2 的最小问题空间
+- 输入:
+  - `docs/portable-agent-contract/dynamic-memory.md`
+  - `docs/portable-agent-contract/dynamic-memory/memory-distillation.md`
+  - `docs/portable-agent-contract/dynamic-memory/long-term-memory-index.md`
+  - `/Users/screamcart-agent0/PandaVault/30_研究/ClaudeCode/ClaudeCode.md`
+  - `projects/reve/src/cli.ts`
+- 动作:
+  - 复核 `Episode / Learning / Behavior Delta` 三层对象在契约中的职责边界
+  - 对照 Claude Code dreaming 的 gate、lock、fork、观测语义，筛出可迁移到 `reve` 的控制要点
+  - 结合当前 `reve distill` 代码，定位 mvp2 与现状之间的结构性缺口
+- 发现:
+  - 契约层已经明确：
+    - `Episode` 是蒸馏后的案例/证据层，适合作为 short-term 产物
+    - `Learning` 是跨 `Episode` 聚合后的稳定经验层，适合作为 mvp2 的 first-pass long-term 产物
+    - `Behavior Delta` 是审阅态可执行行为增量，按长期索引文档仍是长期检索主锚点，但形成门槛更高
+  - 当前 `projects/reve/src/cli.ts` 仅支持：
+    - 扫描 pending `raw_capture`
+    - 单条调用模型生成 `episode`
+    - 写入 run summary
+    - 不具备 batch selection、`Episode -> Learning` consolidation、失败回滚、锁互斥、后台任务可观测
+  - Claude Code dreaming 对 mvp2 最可迁移的不是 prompt，而是驱动器控制语义：
+    - stop-hook 触发但以后台任务执行
+    - gate 顺序偏保守，先 cheap checks 后 expensive checks
+    - 单 lock 同时承载互斥和“上次成功 consolidation 时间”
+    - fork 子代理/子线程执行 consolidation，而主对话只保留简短完成反馈
+    - 任务态、详情态、事件态三层可观测
+  - 契约文档与 Claude Code 研究之间存在一个关键差异：
+    - 契约文档中的“记忆驱动器”描述更偏 session 侧同步检索/注入
+    - Claude Code dreaming 体现的是后台 consolidation worker
+    - 这两者并不冲突，但在 mvp2 中应先聚焦“形成链路”，暂不扩展到运行时注入链路
+- 假设:
+  - mvp2 若先打通 `raw_capture -> Episode -> Learning`，可以在不引入审阅与行为注入复杂度的前提下验证 `reve` 的核心价值
+  - `Behavior Delta` 更适合保留为对象占位和索引兼容目标，而不是第一轮真正写入/注入的执行对象
+  - `reve` 的第一版后台驱动器未必需要真正 fork AI 子代理；只要具备独立 run record、锁、回滚和批次边界，也可先满足 mvp2 验证需求
+- 决策:
+  - 暂不把 Claude Code dreaming 的 UI 形态视为实现要求，只借鉴其 gate/lock/background/observability 控制语义
+  - 暂不把长期检索注入器纳入当前 mvp2 讨论；当前讨论只聚焦“形成链路”
+- 未解问题:
+  - mvp2 的长期产物是否明确只做 `Learning`，还是要同时生成 `Behavior Delta` 草案
+  - `Episode -> Learning` 的批次边界应按时间窗、session 数，还是按主题/信号聚类形成
+  - 后台驱动器是否必须以真实 AI 子线程形态运行，还是先以 `reve` 独立进程运行即可
+- 下一步:
+  - 向用户确认 mvp2 的长期对象范围
+  - 基于确认结果，提出 2-3 种 `reve` 驱动器方案并比较取舍
+
+## R-0108 确认 MVP2 长期对象范围为 `Learning only`
+
+- 日期: 2026-04-07
+- 目标: 锁定 mvp2 的长期对象范围，避免 `reve` 驱动器设计同时混入 `Behavior Delta` 审阅链
+- 输入:
+  - 用户对范围问题的直接确认：`Learning Only`
+- 动作:
+  - 将本轮设计目标收敛为：
+    - `raw_capture -> Episode -> Learning`
+  - 保留 `Behavior Delta` 仅作为未来兼容占位，不纳入当前真实生成目标
+- 发现:
+  - 该范围确认后，mvp2 可以集中验证三件事：
+    - `raw_capture` 批次选择是否稳定
+    - `Episode` 是否能被聚合为高质量 `Learning`
+    - `Learning` 是否具备未来可继续晋升的证据链
+  - 当前不需要引入：
+    - `Behavior Delta` 审阅状态
+    - 执行上下文注入门控
+    - `skill_pack update` 变更链
+- 决策:
+  - mvp2 first-pass long-term object 明确限定为 `Learning`
+- 未解问题:
+  - `Learning` 的形成单位应按时间批、session 批还是主题批
+  - `Learning` 落盘后需要哪些最小索引字段来支撑未来 `Behavior Delta` 晋升
+- 下一步:
+  - 对比 2-3 种 `reve` 驱动器方案
+  - 给出推荐路径并等待用户批准设计
+
+## R-0109 确认 MVP2 先实现纯离线批处理驱动，后台实时性后置
+
+- 日期: 2026-04-07
+- 目标: 锁定 `reve` 在 mvp2 的第一阶段运行形态，避免过早引入后台触发与实时增强复杂度
+- 输入:
+  - 用户决策：先实现方案 3 `纯离线批处理`
+- 动作:
+  - 将 mvp2 第一阶段驱动器收敛为“手动触发的离线批处理”
+  - 将“后台 worker 驱动、实时提取与记忆注入”下沉为后续增量阶段
+- 发现:
+  - 当前最优先验证目标不是实时性，而是蒸馏效果是否稳定、长期对象是否有质量
+  - 纯离线批处理可以把问题收敛为：
+    - 批次选择
+    - `Episode` 形成质量
+    - `Episode -> Learning` 聚合质量
+    - 幂等、回滚、run record
+  - 在该阶段，手动触发比 stop-hook 背景触发更利于反复测试 prompt、provider 与对象结构
+- 决策:
+  - mvp2 第一阶段采用手动触发的 `reve` 纯离线批处理模式
+  - 触发增强顺序明确为：
+    1. 先跑通离线批处理蒸馏效果
+    2. 再在其基础上增量实现后台实时性与记忆提取
+- 未解问题:
+  - 离线批处理的最小命令接口应是单命令 `drive`，还是拆成 `distill/consolidate` 两阶段命令
+  - `Learning` 的批次形成应默认按固定窗口，还是按主题聚类
+- 下一步:
+  - 给出基于纯离线批处理的 `reve` 设计分段说明
+  - 待用户批准后写入设计文档并提交
+
+## R-0110 MVP2 离线批处理设计获批并固化为正式设计文档
+
+- 日期: 2026-04-07
+- 目标: 将已确认的 mvp2 第一阶段方案固化为可执行的设计文档，作为后续 implementation plan 的依据
+- 输入:
+  - 用户确认：按 `纯离线批处理 -> 后台增强` 的两阶段顺序推进
+  - 用户确认：按步骤执行设计文档、提交、实现计划
+- 动作:
+  - 编写 `docs/plans/2026-04-07-reve-mvp2-offline-distillation-design.md`
+  - 将设计边界明确收敛为：
+    - 手动触发
+    - `raw_capture -> Episode -> Learning`
+    - `distill / consolidate / drive` 三命令形态
+    - 不纳入后台 worker、长期注入与 `Behavior Delta`
+- 发现:
+  - `distill` 与 `consolidate` 分离有利于手动评估蒸馏质量，避免把短期问题和长期聚合问题混在一次调试里
+  - `drive` 作为编排入口是必要的，但不应额外承载业务语义
+  - 第一阶段最关键的工程约束是：
+    - `Learning` 幂等
+    - 锁冲突保护
+    - 失败时只留下 run record，不留下半完成业务状态
+- 决策:
+  - 将该设计文档作为 mvp2 第一阶段唯一正式设计基线
+- 未解问题:
+  - `Learning` 的最小证据门槛是否固定为至少 2 条 `Episode`
+  - `needs_more_evidence` 是否落盘为中间对象
+- 下一步:
+  - 提交设计文档与研究记录
+  - 使用 `writing-plans` 生成实现计划
