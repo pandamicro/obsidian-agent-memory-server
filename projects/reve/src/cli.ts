@@ -275,7 +275,7 @@ function readDistillRuntimeConfig(): DistillProviderRuntime {
     ? String(parsedConfig.topLevel.model).trim()
     : '';
   const envModel = process.env.OBSIDIAN_AGENT_MEMORY_SERVER_DISTILL_MODEL?.trim();
-  const model = envModel || modelFromConfig || 'gpt-5.4-mini';
+  const model = envModel || modelFromConfig || 'gpt-5.2';
 
   const baseUrl = typeof providerSection.base_url === 'string'
     ? String(providerSection.base_url).trim()

@@ -3261,3 +3261,18 @@
   - `npm --prefix projects/cli test`：11 passed, 0 failed
   - `npm --prefix projects/reve test`：2 passed, 0 failed
   - `node --test --experimental-strip-types scripts/codex-hooks/test/*.test.ts`：24 passed, 0 failed
+
+## R-0101 调整 reve distill 默认模型为 gpt-5.2
+
+- 日期: 2026-04-07
+- 目标: 响应用户要求，更新 distill 默认模型
+- 输入:
+  - 用户明确要求将默认 distill 模型改为 `gpt-5.2`
+- 动作:
+  - 修改 `projects/reve/src/cli.ts` 中 runtime 默认模型回退值：
+    - `gpt-5.4-mini` -> `gpt-5.2`
+- 决策:
+  - 仅修改默认回退值，不改变优先级：
+    1) `OBSIDIAN_AGENT_MEMORY_SERVER_DISTILL_MODEL`
+    2) `~/.codex/config.toml` 的 `model`
+    3) 代码默认值 `gpt-5.2`
