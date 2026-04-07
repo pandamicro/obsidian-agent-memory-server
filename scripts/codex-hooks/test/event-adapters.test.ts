@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import test from 'node:test';
 
 import { createMemoryHookDriver } from '../driver.ts';
-import { bindAgent, repoRoot, spawnAgents } from './helpers.ts';
+import { bindAgent, repoRoot, spawnAgents, spawnReve } from './helpers.ts';
 
 async function setupDriver() {
   const sharedRoot = await mkdtemp(join(tmpdir(), 'codex-hooks-adapter-shared-'));
@@ -15,7 +15,7 @@ async function setupDriver() {
     0,
   );
   assert.equal(
-    spawnAgents(
+    spawnReve(
       ['distill', '--agent-id', 'research-agent', '--limit', '10'],
       sharedRoot,
       { OBSIDIAN_AGENT_MEMORY_SERVER_DISTILL_PROVIDER: 'mock' },

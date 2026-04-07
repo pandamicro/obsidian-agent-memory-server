@@ -4,9 +4,24 @@ import { fileURLToPath } from 'node:url';
 import { join, resolve } from 'node:path';
 
 export const repoRoot = resolve(fileURLToPath(new URL('../../../', import.meta.url)));
+const revePath = join(repoRoot, 'bin', 'reve');
 
 export function spawnAgents(args: string[], sharedRoot: string, env: NodeJS.ProcessEnv = {}) {
   return spawnSync(join(repoRoot, 'bin', 'agents'), args, {
+    cwd: repoRoot,
+    env: {
+      ...process.env,
+      ...env,
+      OBSIDIAN_AGENT_MEMORY_SERVER_SHARED_ROOT: sharedRoot,
+      OBSIDIAN_AGENT_MEMORY_SERVER_ROOT: sharedRoot,
+    },
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+}
+
+export function spawnReve(args: string[], sharedRoot: string, env: NodeJS.ProcessEnv = {}) {
+  return spawnSync(revePath, args, {
     cwd: repoRoot,
     env: {
       ...process.env,

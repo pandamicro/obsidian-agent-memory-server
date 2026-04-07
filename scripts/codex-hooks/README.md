@@ -51,6 +51,14 @@ Agents CLI timeout budget:
 - default: `12000` ms
 - clamp range: `1000` - `120000` ms
 
+Optional stop-triggered distill:
+
+- env: `OBSIDIAN_AGENT_MEMORY_SERVER_HOOKS_STOP_TRIGGER_DISTILL`
+- default: disabled
+- when enabled, `Stop` will fail-open invoke `bin/reve distill`
+- optional timeout env: `OBSIDIAN_AGENT_MEMORY_SERVER_HOOKS_REVE_TIMEOUT_MS`
+- optional limit env: `OBSIDIAN_AGENT_MEMORY_SERVER_HOOKS_STOP_DISTILL_LIMIT` (default `20`)
+
 Derived signals toggle (MVP placeholder):
 
 - env: `OBSIDIAN_AGENT_MEMORY_SERVER_HOOK_DERIVED_SIGNALS`
@@ -63,4 +71,4 @@ Current implementation status:
 - Partial: Hook envelope contract is implemented, but derived event production remains disabled by default
 - Planned: derived signal generation and confidence-driven side effects
 
-The runtime is intentionally thin. Hooks decide when to refresh memory and write `raw-capture`; `agents distill` is responsible for model-filtered `short-term` generation.
+The runtime is intentionally thin. Hooks decide when to refresh memory and write `raw-capture`; `bin/reve distill` is responsible for model-filtered `short-term` generation.

@@ -65,6 +65,10 @@ function getAgentsCommand(sourceRepoRoot: string): string {
   return join(sourceRepoRoot, 'bin', 'agents');
 }
 
+function getReveCommand(sourceRepoRoot: string): string {
+  return join(sourceRepoRoot, 'bin', 'reve');
+}
+
 type AgentsCommandReason = 'ok' | 'timeout' | 'spawn_error' | 'exit_nonzero';
 
 type AgentsCommandResult = {
@@ -83,6 +87,22 @@ function readAgentsTimeoutMs(options: HookDriverOptions): number {
   if (rounded < 1000) return 1000;
   if (rounded > 120000) return 120000;
   return rounded;
+}
+
+function readReveTimeoutMs(): number {
+  const raw = Number.parseInt(process.env.OBSIDIAN_AGENT_MEMORY_SERVER_HOOKS_REVE_TIMEOUT_MS ?? '', 10);
+  if (!Number.isFinite(raw)) {
+    return 12000;
+  }
+  const rounded = Math.floor(raw);
+  if (rounded < 1000) return 1000;
+  if (rounded > 120000) return 120000;
+  return rounded;
+}
+
+function isStopDistillEnabled(): boolean {
+  const raw = (process.env.OBSIDIAN_AGENT_MEMORY_SERVER_HOOKS_STOP_TRIGGER_DISTILL ?? '').trim().toLowerCase();
+  return raw === '1' || raw === 'true' || raw === 'yes' || raw === 'on';
 }
 
 function runAgentsCommand(
@@ -132,6 +152,66 @@ function runAgentsCommand(
       code: result.status ?? 1,
       stdout,
       stderr: compactText(`${stderr}\n${errorMessage}`.trim() || 'agents command failed to spawn'),
+      reason: 'spawn_error',
+    };
+  }
+
+  return {
+    code: result.status ?? 1,
+    stdout,
+    stderr,
+    reason: 'exit_nonzero',
+  };
+}
+
+function runReveDistillCommand(
+  sourceRepoRoot: string,
+  agentId: string,
+  sharedRoot: string,
+  workspaceRoot: string,
+  timeoutMs: number,
+): AgentsCommandResult {
+  const args = ['distill', '--agent-id', agentId, '--limit', process.env.OBSIDIAN_AGENT_MEMORY_SERVER_HOOKS_STOP_DISTILL_LIMIT ?? '20'];
+  const result = spawnSync(getReveCommand(sourceRepoRoot), args, {
+    env: {
+      ...process.env,
+      OBSIDIAN_AGENT_MEMORY_SERVER_SHARED_ROOT: sharedRoot,
+      OBSIDIAN_AGENT_MEMORY_SERVER_ROOT: sharedRoot,
+      OBSIDIAN_AGENT_MEMORY_SERVER_WORKSPACE_ROOT: workspaceRoot,
+    },
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+    timeout: timeoutMs,
+  });
+
+  const stdout = result.stdout ?? '';
+  const stderr = result.stderr ?? '';
+  const errorCode = (result.error as NodeJS.ErrnoException | undefined)?.code;
+  const errorMessage = result.error?.message ?? '';
+
+  if (result.status === 0) {
+    return {
+      code: 0,
+      stdout,
+      stderr,
+      reason: 'ok',
+    };
+  }
+
+  if (errorCode === 'ETIMEDOUT' || /timed?\s*out/i.test(errorMessage)) {
+    return {
+      code: 124,
+      stdout,
+      stderr: compactText(`${stderr}\n${errorMessage}`.trim() || `reve distill timed out after ${timeoutMs}ms`),
+      reason: 'timeout',
+    };
+  }
+
+  if (result.error) {
+    return {
+      code: result.status ?? 1,
+      stdout,
+      stderr: compactText(`${stderr}\n${errorMessage}`.trim() || 'reve distill failed to spawn'),
       reason: 'spawn_error',
     };
   }
@@ -948,6 +1028,25 @@ export function createMemoryHookDriver(options: HookDriverOptions = {}): HookDri
       updateLastFlush(state);
 
       maybePersistState(stateRoot, workspaceRoot, sessionId, state);
+
+      if (isStopDistillEnabled()) {
+        const reveResult = runReveDistillCommand(
+          sourceRepoRoot,
+          agentId,
+          sharedRoot,
+          workspaceRoot,
+          readReveTimeoutMs(),
+        );
+        logHookEvent(stateRoot, workspaceRoot, sessionId, {
+          event: 'stop',
+          phase: 'reve_distill',
+          status: reveResult.code === 0 ? 'ok' : 'error',
+          reason: reveResult.reason,
+          code: reveResult.code,
+          stderr: compactText(reveResult.stderr, 300),
+        });
+      }
+
       return {
         continue: true,
       };

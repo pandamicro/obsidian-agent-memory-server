@@ -3232,3 +3232,32 @@
   - hooks 侧优先支持 `bin/reve` 调用，保持 fail-open
 - 假设:
   - 现有 `raw_capture`/`short-term` 文件契约无需修改即可完成迁移
+
+## R-0100 完成 `projects/reve` 落地并接入 hooks 可选 stop 触发
+
+- 日期: 2026-04-07
+- 目标: 将 distill 实现从 `projects/cli` 完整迁移到 `projects/reve`，并提供独立调用入口
+- 输入:
+  - 已批准方案：完全拆分（CLI 不再承载 distill 命令）
+  - 用户补充：支持外部周期调用，或 stop hook 主动触发
+- 动作:
+  - 新增 `projects/reve`：
+    - `projects/reve/src/cli.ts`：承载 distill 全部实现
+    - `projects/reve/test/reve.test.ts`：覆盖 mock distill 与 config.toml provider 解析
+    - `projects/reve/package.json` 与 `projects/reve/README.md`
+  - 新增 `bin/reve` 入口，复用共享根与 workspace 根环境变量约定
+  - `projects/cli/src/cli.ts` 移除 distill 相关逻辑与命令分支，保留 `init/run/verify/list/mount`
+  - hooks 侧调整：
+    - 测试中 distill 调用从 `agents distill` 切换为 `bin/reve distill`
+    - `Stop` 增加可选主动触发（默认关闭，fail-open）：
+      - `OBSIDIAN_AGENT_MEMORY_SERVER_HOOKS_STOP_TRIGGER_DISTILL`
+      - `OBSIDIAN_AGENT_MEMORY_SERVER_HOOKS_REVE_TIMEOUT_MS`
+      - `OBSIDIAN_AGENT_MEMORY_SERVER_HOOKS_STOP_DISTILL_LIMIT`
+  - 文档同步更新：CLI README、hooks README、MVP plan/contract
+- 决策:
+  - 保持 MVP 冻结边界：仍不启用长期记忆写入，仅迁移短期 distill 能力与边界
+  - stop 主动触发仅作为可选加速路径，默认关闭
+- 验证:
+  - `npm --prefix projects/cli test`：11 passed, 0 failed
+  - `npm --prefix projects/reve test`：2 passed, 0 failed
+  - `node --test --experimental-strip-types scripts/codex-hooks/test/*.test.ts`：24 passed, 0 failed

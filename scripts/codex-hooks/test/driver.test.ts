@@ -6,7 +6,7 @@ import test from 'node:test';
 
 import { createMemoryHookDriver } from '../driver.ts';
 import { getHookLogPath } from '../state.ts';
-import { bindAgent, repoRoot, spawnAgents } from './helpers.ts';
+import { bindAgent, repoRoot, spawnAgents, spawnReve } from './helpers.ts';
 
 async function countLongTermFiles(sharedRoot: string): Promise<number> {
   try {
@@ -28,11 +28,11 @@ async function setupSharedAgent() {
     spawnAgents(['run', '--agent-id', 'research-agent', '--input', 'remember the contract rules'], sharedRoot).status,
     0,
   );
-  assert.equal(
-    spawnAgents(
-      ['distill', '--agent-id', 'research-agent', '--limit', '10'],
-      sharedRoot,
-      { OBSIDIAN_AGENT_MEMORY_SERVER_DISTILL_PROVIDER: 'mock' },
+    assert.equal(
+      spawnReve(
+        ['distill', '--agent-id', 'research-agent', '--limit', '10'],
+        sharedRoot,
+        { OBSIDIAN_AGENT_MEMORY_SERVER_DISTILL_PROVIDER: 'mock' },
     ).status,
     0,
   );
@@ -48,7 +48,7 @@ async function setupSharedAgents(agentIds: string[]) {
       0,
     );
     assert.equal(
-      spawnAgents(
+      spawnReve(
         ['distill', '--agent-id', agentId, '--limit', '10'],
         sharedRoot,
         { OBSIDIAN_AGENT_MEMORY_SERVER_DISTILL_PROVIDER: 'mock' },
