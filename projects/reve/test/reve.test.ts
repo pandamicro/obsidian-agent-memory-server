@@ -206,7 +206,7 @@ test('consolidate builds a long-term learning record from short-term episodes', 
   assert.equal(runFiles.length, 1);
   const runSummary = JSON.parse(await readFile(join(runsDir, runFiles[0]!), 'utf8'));
   assert.equal(runSummary.agent_id, 'research-agent');
-  assert.equal(runSummary.selected, episodeIds.length);
+  assert.equal(runSummary.episodes_scanned, episodeIds.length);
   assert.equal(runSummary.limit, 10);
   assert.equal(runSummary.batch_size, 5);
   assert.equal(runSummary.learning_created, 1);
@@ -214,7 +214,7 @@ test('consolidate builds a long-term learning record from short-term episodes', 
   assert.equal(runSummary.needs_more_evidence, 0);
   assert.equal(runSummary.provider, 'mock');
   assert.equal(runSummary.model, 'gpt-5.2');
-  assert.equal(runSummary.batches, 1);
+  assert.equal(runSummary.batches_scanned, 1);
   assert.equal(learning.consolidation_run_id, runSummary.run_id);
 });
 
@@ -333,7 +333,7 @@ test('consolidate only uses episode records with stable ids', async () => {
   const runFiles = await readdir(runsDir);
   assert.equal(runFiles.length, 1);
   const runSummary = JSON.parse(await readFile(join(runsDir, runFiles[0]!), 'utf8'));
-  assert.equal(runSummary.selected, 2);
+  assert.equal(runSummary.episodes_scanned, 2);
 });
 
 test('consolidate with no valid episodes skips learning file but still records run', async () => {
@@ -376,7 +376,7 @@ test('consolidate with no valid episodes skips learning file but still records r
   const runFiles = await readdir(runsDir);
   assert.equal(runFiles.length, 1);
   const runSummary = JSON.parse(await readFile(join(runsDir, runFiles[0]!), 'utf8'));
-  assert.equal(runSummary.selected, 0);
+  assert.equal(runSummary.episodes_scanned, 0);
   assert.equal(runSummary.limit, 10);
   assert.equal(runSummary.batch_size, 5);
 });
@@ -441,6 +441,88 @@ test('consolidate records no_learning when evidence unsupported', async () => {
   assert.equal(runSummary.learning_created, 0);
   assert.equal(runSummary.no_learning, 1);
   assert.equal(runSummary.needs_more_evidence, 0);
-  assert.equal(runSummary.selected, weakEpisodes.length);
-  assert.equal(runSummary.batches, 1);
+  assert.equal(runSummary.episodes_scanned, weakEpisodes.length);
+  assert.equal(runSummary.batches_scanned, 1);
+});
+
+test('consolidate bins episodes by fixed windows respecting limit and batch size', async () => {
+  const workspaceRoot = await mkdtemp(join(tmpdir(), 'agent-reve-consolidate-batching-'));
+  const sharedRoot = await mkdtemp(join(tmpdir(), 'agent-reve-consolidate-batching-shared-'));
+  const sharedEnv = {
+    OBSIDIAN_AGENT_MEMORY_SERVER_SHARED_ROOT: sharedRoot,
+  };
+  const consolidateEnv = {
+    ...sharedEnv,
+    OBSIDIAN_AGENT_MEMORY_SERVER_CONSOLIDATE_PROVIDER: 'mock',
+    OBSIDIAN_AGENT_MEMORY_SERVER_CONSOLIDATE_MODEL: 'gpt-5.2',
+  };
+
+  assert.equal((await runLauncher(['init', '--agent-id', 'research-agent'], workspaceRoot, sharedEnv)).code, 0);
+
+  const agentRoot = join(sharedRoot, 'agents', 'research-agent');
+  const shortTermDir = join(agentRoot, 'memory', 'short-term');
+  await mkdir(shortTermDir, { recursive: true });
+
+  const episodeOrder = Array.from({ length: 7 }, (_, index) => {
+    const padded = `${index + 1}`.padStart(2, '0');
+    return {
+      id: `episode-${index + 1}`,
+      timestamp: `2026-04-07T10-21-42.3${padded}Z`,
+    };
+  });
+  for (const episode of episodeOrder) {
+    const entry = {
+      schema_version: '1',
+      message_id: episode.id,
+      identity_id: 'research-agent',
+      object_kind: 'episode',
+      event_type: 'captured',
+      summary: `Episode ${episode.id}`,
+      evidence_refs: [`evidence-${episode.id}`],
+    };
+    await writeFile(join(shortTermDir, `${episode.timestamp}-${episode.id}.json`), `${JSON.stringify(entry, null, 2)}\n`, 'utf8');
+  }
+
+  const limit = 5;
+  const batchSize = 2;
+  const consolidateResult = await runReve(
+    ['consolidate', '--agent-id', 'research-agent', '--limit', `${limit}`, '--batch-size', `${batchSize}`],
+    workspaceRoot,
+    consolidateEnv,
+  );
+  assert.equal(consolidateResult.code, 0);
+
+  const runsDir = join(agentRoot, 'runs');
+  const runFiles = await readdir(runsDir);
+  assert.equal(runFiles.length, 1);
+  const runSummary = JSON.parse(await readFile(join(runsDir, runFiles[0]!), 'utf8'));
+  assert.equal(runSummary.episodes_scanned, limit);
+  assert.equal(runSummary.batches_scanned, Math.ceil(limit / batchSize));
+  assert.equal(runSummary.learning_created, Math.floor(limit / batchSize));
+  assert.equal(runSummary.needs_more_evidence, 1);
+
+  const longTermDir = join(agentRoot, 'memory', 'long-term');
+  const longTermFiles = await readdir(longTermDir);
+  assert.equal(longTermFiles.length, runSummary.learning_created);
+
+  const learningRecords = [];
+  for (const file of longTermFiles) {
+    const content = JSON.parse(await readFile(join(longTermDir, file!), 'utf8'));
+    learningRecords.push(content);
+  }
+  learningRecords.sort((a, b) => {
+    const aFirst = a.source_episode_ids[0] ?? '';
+    const bFirst = b.source_episode_ids[0] ?? '';
+    return aFirst.localeCompare(bFirst);
+  });
+
+  const expectedBatches = [
+    ['episode-1', 'episode-2'],
+    ['episode-3', 'episode-4'],
+  ];
+
+  for (let i = 0; i < expectedBatches.length; i += 1) {
+    assert.deepEqual(learningRecords[i].source_episode_ids, expectedBatches[i]);
+    assert.equal(learningRecords[i].consolidation_run_id, runSummary.run_id);
+  }
 });
