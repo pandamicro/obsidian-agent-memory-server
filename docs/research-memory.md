@@ -3551,3 +3551,36 @@
 - 下一步:
   - 提交设计文档与研究记录
   - 使用 `writing-plans` 生成实现计划
+
+## R-0111 基于离线设计生成 `reve` MVP2 实现计划
+
+- 日期: 2026-04-07
+- 目标: 将已批准的离线批处理设计转成可逐步执行、可测试、可提交的实现计划
+- 输入:
+  - `docs/plans/2026-04-07-reve-mvp2-offline-distillation-design.md`
+  - 当前 `projects/reve` 结构：
+    - `src/cli.ts`
+    - `test/reve.test.ts`
+    - `README.md`
+- 动作:
+  - 按 `writing-plans` 规则生成实现计划文档：
+    - `docs/plans/2026-04-07-reve-mvp2-offline-distillation-implementation-plan.md`
+  - 将实现顺序拆为：
+    - `consolidate` 基础命令
+    - `Learning` 对象结构
+    - 固定窗口批处理
+    - `Learning` 幂等
+    - 锁与失败安全
+    - `drive` 编排
+    - 真实 provider 手测与研究回填
+- 发现:
+  - 当前 `projects/reve` 已有最小测试入口，适合沿用 `node:test` 做 TDD 扩展
+  - `distill` 与 `consolidate` 的职责拆分适合作为测试切面，能避免端到端单测掩盖具体失败点
+  - 把真实 provider 手测单独列为计划末尾任务是必要的，否则会只验证链路而不验证对象质量
+- 决策:
+  - 后续实现阶段以该 implementation plan 作为唯一任务拆解基线
+- 未解问题:
+  - 实现时是否需要把 `src/cli.ts` 先拆模块，还是先在单文件内完成第一轮能力
+- 下一步:
+  - 提交 implementation plan
+  - 等待用户选择执行方式或直接进入执行阶段
