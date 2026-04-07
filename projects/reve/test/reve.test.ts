@@ -147,6 +147,11 @@ test('consolidate builds a long-term learning record from short-term episodes', 
   const sharedEnv = {
     OBSIDIAN_AGENT_MEMORY_SERVER_SHARED_ROOT: sharedRoot,
   };
+  const consolidateEnv = {
+    ...sharedEnv,
+    OBSIDIAN_AGENT_MEMORY_SERVER_CONSOLIDATE_PROVIDER: 'mock',
+    OBSIDIAN_AGENT_MEMORY_SERVER_CONSOLIDATE_MODEL: 'gpt-5.2',
+  };
 
   assert.equal((await runLauncher(['init', '--agent-id', 'research-agent'], workspaceRoot, sharedEnv)).code, 0);
 
@@ -163,6 +168,7 @@ test('consolidate builds a long-term learning record from short-term episodes', 
       object_kind: 'episode',
       event_type: 'captured',
       summary: `Episode ${episodeId}`,
+      evidence_refs: [`evidence-${episodeId}`],
     };
     await writeFile(join(shortTermDir, `${episodeId}.json`), `${JSON.stringify(episode, null, 2)}\n`, 'utf8');
   }
@@ -170,7 +176,7 @@ test('consolidate builds a long-term learning record from short-term episodes', 
   const consolidateResult = await runReve(
     ['consolidate', '--agent-id', 'research-agent', '--limit', '10', '--batch-size', '5'],
     workspaceRoot,
-    sharedEnv,
+    consolidateEnv,
   );
   assert.equal(consolidateResult.code, 0);
 
@@ -182,6 +188,18 @@ test('consolidate builds a long-term learning record from short-term episodes', 
   assert.equal(learning.object_kind, 'learning');
   assert.equal(learning.identity_id, 'research-agent');
   assert.deepEqual(learning.source_episode_ids.sort(), episodeIds.slice().sort());
+  assert.equal(typeof learning.message_id, 'string');
+  assert.equal(typeof learning.object_ref, 'string');
+  assert.equal(typeof learning.summary, 'string');
+  assert.equal(typeof learning.applicability, 'string');
+  assert.equal(typeof learning.failure_conditions, 'string');
+  assert.deepEqual(learning.evidence_refs.sort(), episodeIds.map((id) => `evidence-${id}`));
+  assert(typeof learning.confidence === 'number');
+  assert.equal(learning.quality.status, 'pass');
+  assert(Array.isArray(learning.quality.reasons));
+  assert.deepEqual(learning.quality.reasons, []);
+  assert.equal(typeof learning.observed_at, 'string');
+  assert.equal(typeof learning.consolidation_run_id, 'string');
 
   const runsDir = join(agentRoot, 'runs');
   const runFiles = await readdir(runsDir);
@@ -191,6 +209,13 @@ test('consolidate builds a long-term learning record from short-term episodes', 
   assert.equal(runSummary.selected, episodeIds.length);
   assert.equal(runSummary.limit, 10);
   assert.equal(runSummary.batch_size, 5);
+  assert.equal(runSummary.learning_created, 1);
+  assert.equal(runSummary.no_learning, 0);
+  assert.equal(runSummary.needs_more_evidence, 0);
+  assert.equal(runSummary.provider, 'mock');
+  assert.equal(runSummary.model, 'gpt-5.2');
+  assert.equal(runSummary.batches, 1);
+  assert.equal(learning.consolidation_run_id, runSummary.run_id);
 });
 
 test('distill rejects non-integer limit values', async () => {
@@ -198,6 +223,11 @@ test('distill rejects non-integer limit values', async () => {
   const sharedRoot = await mkdtemp(join(tmpdir(), 'agent-reve-shared-limit-'));
   const sharedEnv = {
     OBSIDIAN_AGENT_MEMORY_SERVER_SHARED_ROOT: sharedRoot,
+  };
+  const consolidateEnv = {
+    ...sharedEnv,
+    OBSIDIAN_AGENT_MEMORY_SERVER_CONSOLIDATE_PROVIDER: 'mock',
+    OBSIDIAN_AGENT_MEMORY_SERVER_CONSOLIDATE_MODEL: 'gpt-5.2',
   };
 
   assert.equal((await runLauncher(['init', '--agent-id', 'research-agent'], workspaceRoot, sharedEnv)).code, 0);
@@ -217,6 +247,11 @@ test('consolidate only uses episode records with stable ids', async () => {
   const sharedEnv = {
     OBSIDIAN_AGENT_MEMORY_SERVER_SHARED_ROOT: sharedRoot,
   };
+  const consolidateEnv = {
+    ...sharedEnv,
+    OBSIDIAN_AGENT_MEMORY_SERVER_CONSOLIDATE_PROVIDER: 'mock',
+    OBSIDIAN_AGENT_MEMORY_SERVER_CONSOLIDATE_MODEL: 'gpt-5.2',
+  };
 
   assert.equal((await runLauncher(['init', '--agent-id', 'research-agent'], workspaceRoot, sharedEnv)).code, 0);
 
@@ -234,6 +269,7 @@ test('consolidate only uses episode records with stable ids', async () => {
         object_kind: 'episode',
         event_type: 'captured',
         summary: 'Valid episode',
+        evidence_refs: ['evidence-valid'],
       },
     },
     {
@@ -261,6 +297,7 @@ test('consolidate only uses episode records with stable ids', async () => {
         object_ref: 'ref-episode',
         identity_id: 'research-agent',
         object_kind: 'episode',
+        evidence_refs: ['evidence-ref'],
       },
     },
     {
@@ -280,7 +317,7 @@ test('consolidate only uses episode records with stable ids', async () => {
   const consolidateResult = await runReve(
     ['consolidate', '--agent-id', 'research-agent', '--limit', '10', '--batch-size', '5'],
     workspaceRoot,
-    sharedEnv,
+    consolidateEnv,
   );
   assert.equal(consolidateResult.code, 0);
 
@@ -305,6 +342,11 @@ test('consolidate with no valid episodes skips learning file but still records r
   const sharedEnv = {
     OBSIDIAN_AGENT_MEMORY_SERVER_SHARED_ROOT: sharedRoot,
   };
+  const consolidateEnv = {
+    ...sharedEnv,
+    OBSIDIAN_AGENT_MEMORY_SERVER_CONSOLIDATE_PROVIDER: 'mock',
+    OBSIDIAN_AGENT_MEMORY_SERVER_CONSOLIDATE_MODEL: 'gpt-5.2',
+  };
 
   assert.equal((await runLauncher(['init', '--agent-id', 'research-agent'], workspaceRoot, sharedEnv)).code, 0);
 
@@ -322,7 +364,7 @@ test('consolidate with no valid episodes skips learning file but still records r
   const consolidateResult = await runReve(
     ['consolidate', '--agent-id', 'research-agent', '--limit', '10', '--batch-size', '5'],
     workspaceRoot,
-    sharedEnv,
+    consolidateEnv,
   );
   assert.equal(consolidateResult.code, 0);
 
@@ -337,4 +379,68 @@ test('consolidate with no valid episodes skips learning file but still records r
   assert.equal(runSummary.selected, 0);
   assert.equal(runSummary.limit, 10);
   assert.equal(runSummary.batch_size, 5);
+});
+
+test('consolidate records no_learning when evidence unsupported', async () => {
+  const workspaceRoot = await mkdtemp(join(tmpdir(), 'agent-reve-consolidate-no-learning-'));
+  const sharedRoot = await mkdtemp(join(tmpdir(), 'agent-reve-consolidate-no-learning-shared-'));
+  const sharedEnv = {
+    OBSIDIAN_AGENT_MEMORY_SERVER_SHARED_ROOT: sharedRoot,
+  };
+  const consolidateEnv = {
+    ...sharedEnv,
+    OBSIDIAN_AGENT_MEMORY_SERVER_CONSOLIDATE_PROVIDER: 'mock',
+    OBSIDIAN_AGENT_MEMORY_SERVER_CONSOLIDATE_MODEL: 'gpt-5.2',
+  };
+
+  assert.equal((await runLauncher(['init', '--agent-id', 'research-agent'], workspaceRoot, sharedEnv)).code, 0);
+
+  const agentRoot = join(sharedRoot, 'agents', 'research-agent');
+  const shortTermDir = join(agentRoot, 'memory', 'short-term');
+  await mkdir(shortTermDir, { recursive: true });
+
+  const weakEpisodes = [
+    {
+      schema_version: '1',
+      message_id: 'weak-episode-1',
+      identity_id: 'research-agent',
+      object_kind: 'episode',
+      event_type: 'captured',
+      summary: '',
+      evidence_refs: [],
+    },
+    {
+      schema_version: '1',
+      message_id: 'weak-episode-2',
+      identity_id: 'research-agent',
+      object_kind: 'episode',
+      event_type: 'captured',
+      summary: '',
+      evidence_refs: [],
+    },
+  ];
+  for (const episode of weakEpisodes) {
+    await writeFile(join(shortTermDir, `${episode.message_id}.json`), `${JSON.stringify(episode, null, 2)}\n`, 'utf8');
+  }
+
+  const consolidateResult = await runReve(
+    ['consolidate', '--agent-id', 'research-agent', '--limit', '10', '--batch-size', '5'],
+    workspaceRoot,
+    consolidateEnv,
+  );
+  assert.equal(consolidateResult.code, 0);
+
+  const longTermDir = join(agentRoot, 'memory', 'long-term');
+  const longTermFiles = await readdir(longTermDir);
+  assert.equal(longTermFiles.length, 0);
+
+  const runsDir = join(agentRoot, 'runs');
+  const runFiles = await readdir(runsDir);
+  assert.equal(runFiles.length, 1);
+  const runSummary = JSON.parse(await readFile(join(runsDir, runFiles[0]!), 'utf8'));
+  assert.equal(runSummary.learning_created, 0);
+  assert.equal(runSummary.no_learning, 1);
+  assert.equal(runSummary.needs_more_evidence, 0);
+  assert.equal(runSummary.selected, weakEpisodes.length);
+  assert.equal(runSummary.batches, 1);
 });
