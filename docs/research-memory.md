@@ -3765,3 +3765,32 @@
   - 进展总结后续是否需要升级为阶段 checkpoint 机制
 - 下一步:
   - 若进入下一轮 MVP2 迭代，直接基于该总结中的风险与建议展开
+
+## R-0118 MVP3 问题界定（Episode 优先）
+
+- 日期: 2026-04-08
+- 目标: 从 MVP2 结论出发，为 MVP3 收敛“优化 raw_capture 或 episode 质量”的有效路径
+- 输入:
+  - `docs/plans/2026-04-08-reve-mvp2-progress-summary.md`
+  - `docs/portable-agent-contract/dynamic-memory/short-term-feedback.md`
+  - `docs/plans/2026-04-07-reve-mvp2-offline-distillation-design.md`
+  - `plans/mvp/2026-04-01-codex-agent-identity-mvp-plan.md`
+  - 用户选择：MVP3 先以 `Episode` 侧优化为主
+- 动作:
+  - 回看 MVP2 的真实验证结论，识别 short-term 质量问题的主要来源
+  - 对照动态记忆契约里的短期质量要求与 current implementation 边界
+  - 收敛 MVP3 候选方向，准备后续设计讨论
+- 发现:
+  - 事实: 当前主要问题不再是链路可用性，而是 episode 的主题纯度、证据纯度和批次可聚合性
+  - 事实: `direct_input` 类 raw_capture 容易在 distill 后形成“请求 / 澄清 / 截断回答”型 episode，这类 episode 对长期蒸馏帮助较弱
+  - 事实: 当前 `distill` 仍以单条 raw_capture 为输入，且 episode 输出对象较薄，缺少更强的 rejection / normalization / topic framing 约束
+  - 事实: 固定窗口 batching 暴露了一个结构性问题：如果 episode 本身不够纯净，后续 consolidate 很难靠 batch-size 自行修复
+- 假设:
+  - 假设: MVP3 最有效的最小增量不在 raw_capture 扩容，而在 episode 侧增加更强的准入、归一化和主题约束
+  - 假设: 只有当 episode 质量收敛后，是否继续增强 raw_capture 上下文采集才有可评估价值
+- 决策:
+  - 先按 `Episode 优先` 路线进入 MVP3 设计讨论
+- 未解问题:
+  - MVP3 是否只做 episode 准入/归一化，还是同时引入轻量 pre-batch 分桶
+- 下一步:
+  - 提出 2-3 条 MVP3 候选路径并与用户确认设计方向
