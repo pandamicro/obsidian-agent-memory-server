@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -23,6 +23,8 @@ test('Stop remains side-effect oriented and does not require additionalContext o
     sharedRoot,
     stateRoot,
   });
+  const rawCaptureDir = join(sharedRoot, 'agents', 'research-agent', 'memory', 'raw-capture');
+  const beforeFiles = new Set((await readdir(rawCaptureDir)).sort());
 
   driver.handlePostToolUse({
     hook_event_name: 'PostToolUse',
@@ -45,4 +47,21 @@ test('Stop remains side-effect oriented and does not require additionalContext o
 
   assert.equal(stop.continue, true);
   assert.equal(stop.hookSpecificOutput, undefined);
+
+  const afterFiles = (await readdir(rawCaptureDir)).sort();
+  assert.equal(afterFiles.length, beforeFiles.size + 1);
+  const createdFile = afterFiles.find((file) => !beforeFiles.has(file));
+  assert.ok(createdFile);
+  const latestRawPath = join(rawCaptureDir, createdFile!);
+  const rawCapture = JSON.parse(await readFile(latestRawPath, 'utf8')) as {
+    source_kind?: string;
+    session_id?: string | null;
+    assistant_summary?: string | null;
+    candidates?: Array<unknown>;
+  };
+
+  assert.equal(rawCapture.source_kind, 'hook_flush');
+  assert.equal(rawCapture.session_id, 'session-stop-contract');
+  assert.equal(rawCapture.assistant_summary, 'Done.');
+  assert.equal((rawCapture.candidates ?? []).length > 0, true);
 });

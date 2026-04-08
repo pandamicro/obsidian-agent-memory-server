@@ -21,6 +21,19 @@ async function countLongTermFiles(sharedRoot: string): Promise<number> {
   }
 }
 
+async function countRawCaptureFiles(sharedRoot: string): Promise<number> {
+  try {
+    const files = await readdir(join(sharedRoot, 'agents', 'research-agent', 'memory', 'raw-capture'));
+    return files.length;
+  } catch (error) {
+    const typed = error as NodeJS.ErrnoException;
+    if (typed.code === 'ENOENT') {
+      return 0;
+    }
+    throw error;
+  }
+}
+
 async function setupSharedAgent() {
   const sharedRoot = await mkdtemp(join(tmpdir(), 'codex-hooks-shared-'));
   assert.equal(spawnAgents(['init', '--agent-id', 'research-agent'], sharedRoot).status, 0);
@@ -270,6 +283,32 @@ test('Stop remains short-term-only and does not write long-term objects', async 
 
   const afterFileCount = await countLongTermFiles(sharedRoot);
   assert.equal(afterFileCount, beforeFileCount);
+});
+
+test('Stop does not write raw capture when there is no assistant summary and no pending feedback', async () => {
+  const sharedRoot = await setupSharedAgent();
+  const workspaceRoot = await mkdtemp(join(tmpdir(), 'codex-hooks-workspace-no-flush-'));
+  await bindAgent(workspaceRoot, 'research-agent');
+
+  const stateRoot = await mkdtemp(join(tmpdir(), 'codex-hooks-state-no-flush-'));
+  const driver = createMemoryHookDriver({
+    sourceRepoRoot: repoRoot,
+    sharedRoot,
+    stateRoot,
+  });
+
+  const beforeRawCaptureCount = await countRawCaptureFiles(sharedRoot);
+  const stopResponse = driver.handleStop({
+    hook_event_name: 'Stop',
+    session_id: 'session-no-flush',
+    turn_id: 'turn-no-flush',
+    cwd: workspaceRoot,
+    last_assistant_message: '',
+  });
+
+  assert.equal(stopResponse.continue, true);
+  const afterRawCaptureCount = await countRawCaptureFiles(sharedRoot);
+  assert.equal(afterRawCaptureCount, beforeRawCaptureCount);
 });
 
 test('duplicate hook events are ignored after the first processing pass', async () => {

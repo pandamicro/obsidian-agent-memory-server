@@ -1,4 +1,5 @@
-import { readFileSync, readdirSync } from 'node:fs';
+import { mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
@@ -488,6 +489,101 @@ function eventKey(eventName: HookEventName, envelope: HookEnvelope, input: HookI
   const sessionId = envelope.session_id;
   const turnId = envelope.turn_id ?? input.tool_use_id ?? input.source ?? 'unknown-turn';
   return [eventName, sessionId, turnId].join(':');
+}
+
+function formatHookFlushCandidate(entry: FeedbackEntry): {
+  signal_type: string;
+  polarity: 'supporting' | 'conflicting' | 'insufficient';
+  summary: string;
+  evidence_refs: string[];
+} {
+  return {
+    signal_type: entry.signal_type,
+    polarity: entry.polarity,
+    summary: compactText(entry.summary),
+    evidence_refs: entry.evidence_refs,
+  };
+}
+
+function buildHookFlushInputSnapshot(
+  sessionId: string,
+  workspaceRoot: string,
+  assistantSummary: string | null,
+  candidates: Array<{ signal_type: string; polarity: string; summary: string; evidence_refs: string[] }>,
+  threadId?: string,
+  turnId?: string,
+): string {
+  const headerParts = [`session=${sessionId}`];
+  if (threadId) {
+    headerParts.push(`thread=${threadId}`);
+  }
+  if (turnId) {
+    headerParts.push(`turn=${turnId}`);
+  }
+  headerParts.push('event=stop');
+
+  const lines = [`[hook flush] ${headerParts.join(' ')}`, `workspace=${workspaceRoot}`];
+  if (assistantSummary) {
+    lines.push(`assistant=${assistantSummary}`);
+  }
+  lines.push('candidates:');
+
+  for (const candidate of candidates) {
+    const evidence = candidate.evidence_refs.length > 0 ? ` [${candidate.evidence_refs.join(', ')}]` : '';
+    lines.push(`- ${candidate.signal_type}/${candidate.polarity}: ${candidate.summary}${evidence}`);
+  }
+  return lines.join('\n');
+}
+
+function writeStopRawCapture(
+  sharedRoot: string,
+  agentId: string,
+  workspaceRoot: string,
+  sessionId: string,
+  assistantSummary: string | null,
+  feedbackEntries: FeedbackEntry[],
+  threadId?: string,
+  turnId?: string,
+): string {
+  const observedAt = new Date().toISOString();
+  const messageId = randomUUID();
+  const candidates = feedbackEntries.map(formatHookFlushCandidate);
+  const evidenceRefs = new Set<string>([`input:${messageId}`]);
+  for (const entry of feedbackEntries) {
+    for (const ref of entry.evidence_refs) {
+      evidenceRefs.add(ref);
+    }
+  }
+  if (turnId) {
+    evidenceRefs.add(`turn:${turnId}`);
+  }
+
+  const rawCapture = {
+    schema_version: '1' as const,
+    message_id: messageId,
+    identity_id: agentId,
+    object_kind: 'raw_capture' as const,
+    object_ref: `raw-capture:${messageId}`,
+    event_type: 'captured' as const,
+    evidence_refs: Array.from(evidenceRefs),
+    observed_at: observedAt,
+    source_kind: 'hook_flush' as const,
+    session_id: sessionId,
+    thread_id: threadId ?? null,
+    turn_id: turnId ?? null,
+    event: 'stop',
+    workspace_root: workspaceRoot,
+    assistant_summary: assistantSummary,
+    candidates,
+    input: buildHookFlushInputSnapshot(sessionId, workspaceRoot, assistantSummary, candidates, threadId, turnId),
+  };
+
+  const rawCaptureDir = join(sharedRoot, 'agents', agentId, 'memory', 'raw-capture');
+  mkdirSync(rawCaptureDir, { recursive: true });
+  const filename = `${observedAt.replaceAll(':', '-')}-${messageId}.json`;
+  const path = join(rawCaptureDir, filename);
+  writeFileSync(path, `${JSON.stringify(rawCapture, null, 2)}\n`, 'utf8');
+  return path;
 }
 
 function detectWorkspaceRoot(input: HookInput): string {
@@ -1022,6 +1118,38 @@ export function createMemoryHookDriver(options: HookDriverOptions = {}): HookDri
           [`turn:${input.turn_id ?? 'unknown-turn'}`],
         );
         addPendingFeedback(state, entry);
+      }
+
+      const feedbackEntries = [...state.pending_feedback];
+      const shouldFlushRawCapture = Boolean(lastAssistantMessage) || feedbackEntries.length > 0;
+      if (shouldFlushRawCapture) {
+        try {
+          const rawCapturePath = writeStopRawCapture(
+            sharedRoot,
+            agentId,
+            workspaceRoot,
+            sessionId,
+            lastAssistantMessage || null,
+            feedbackEntries,
+            envelope.thread_id,
+            envelope.turn_id,
+          );
+          logHookEvent(stateRoot, workspaceRoot, sessionId, {
+            event: 'stop',
+            phase: 'raw_capture_write',
+            status: 'ok',
+            path: rawCapturePath,
+            candidates: feedbackEntries.length,
+          });
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          logHookEvent(stateRoot, workspaceRoot, sessionId, {
+            event: 'stop',
+            phase: 'raw_capture_write',
+            status: 'error',
+            error: compactText(message, 300),
+          });
+        }
       }
 
       state.pending_feedback = [];
