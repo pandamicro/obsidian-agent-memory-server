@@ -4315,3 +4315,33 @@
   - 相比“文本 hook flush + 外部解析”，直写更稳定、可控
 - 下一步:
   - 写 failing tests，按 TDD 实现 hooks-side raw-capture writer
+
+## R-0134 hooks 直写 raw_capture Task 1 验证
+
+- 日期: 2026-04-08
+- 目标: 在 `Stop` 时直接写入结构化 `raw_capture`，闭合 hooks -> raw_capture 的最小链路
+- 输入:
+  - `scripts/codex-hooks/driver.ts`
+  - `scripts/codex-hooks/test/driver.test.ts`
+  - `scripts/codex-hooks/test/stop-contract.test.ts`
+  - 提交: `edf6c99`
+- 动作:
+  - 为 `Stop` 新增结构化 raw-capture writer
+  - 为 `PostToolUse + Stop` 新增回归测试，验证会落盘 `source_kind=hook_flush`、非空 `session_id`、`assistant_summary` 与 `candidates`
+  - 新增回归测试，验证无 summary 且无 pending feedback 时不写空壳记录
+  - 独立运行：
+    - `node --test --experimental-strip-types scripts/codex-hooks/test/stop-contract.test.ts`
+    - `node --test --experimental-strip-types --test-name-pattern "Stop does not write raw capture when there is no assistant summary and no pending feedback" scripts/codex-hooks/test/driver.test.ts`
+    - `node --test --experimental-strip-types scripts/codex-hooks/test/driver.test.ts scripts/codex-hooks/test/stop-contract.test.ts`
+  - 完成 spec review 与 code-quality review
+- 发现:
+  - 事实: Task 1 目标测试已通过，`Stop` 现在会在存在 summary 或 pending feedback 时直写一条结构化 `raw_capture`
+  - 事实: 当前 hooks 直写出的 `raw_capture` 与 `projects/cli` 既有 schema 保持兼容，且 `input` 仅作为调试快照保留
+  - 事实: 双评审均通过，未发现阻塞性问题
+  - 事实: 相关测试全集仍有一条既有失败：`SessionStart loads the latest short-term summary`，其失败原因是测试仍断言旧文案 `Latest summary:`，而当前输出为 `Latest short-term ref: <none>`；这与本轮 Stop/raw-capture 改动无关
+  - 事实: code-quality review 识别出当前仍存在“raw-capture 写失败后会清空 pending_feedback”的数据丢失风险，这正是下一任务要修复的问题
+- 决策:
+  - 接受 `edf6c99` 作为 Task 1 的有效提交
+  - 不在 Task 1 范围内顺手修复写失败保留问题，按计划放到 Task 2
+- 下一步:
+  - 进入 Task 2，修复 raw-capture 写失败时仍清空 `pending_feedback` 的问题
