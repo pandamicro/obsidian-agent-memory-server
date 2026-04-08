@@ -87,10 +87,21 @@ async function runReveBin(args: string[], cwd: string, env: NodeJS.ProcessEnv = 
   });
 }
 
-async function startResponsesTestServer(outputTexts: string[]) {
+async function startResponsesTestServer(
+  outputTexts: string[],
+  onRequest?: (body: Record<string, unknown>) => void,
+) {
   let requestIndex = 0;
-  const server = createServer((request, response) => {
+  const server = createServer(async (request, response) => {
     if (request.method === 'POST' && request.url === '/v1/responses') {
+      const chunks: Buffer[] = [];
+      for await (const chunk of request) {
+        chunks.push(Buffer.from(chunk));
+      }
+      if (onRequest) {
+        const rawBody = Buffer.concat(chunks).toString('utf8');
+        onRequest(JSON.parse(rawBody) as Record<string, unknown>);
+      }
       const outputText = outputTexts[Math.min(requestIndex, outputTexts.length - 1)] ?? '';
       requestIndex += 1;
       response.writeHead(200, { 'Content-Type': 'application/json' });
@@ -478,6 +489,94 @@ test('consolidate leaves no learning file when validation fails', async () => {
     assert.equal(runSummary.skip_reason, null);
     assert.ok(runSummary.failure_reason?.includes('quality'));
     assert.equal(runSummary.learning_created, 0);
+  } finally {
+    await server.close();
+  }
+});
+
+test('consolidate sends provider-compatible schema with required reason and nullable learning', async () => {
+  const workspaceRoot = await mkdtemp(join(tmpdir(), 'agent-reve-consolidate-schema-'));
+  const sharedRoot = await mkdtemp(join(tmpdir(), 'agent-reve-consolidate-schema-shared-'));
+  const sharedEnv = {
+    OBSIDIAN_AGENT_MEMORY_SERVER_SHARED_ROOT: sharedRoot,
+  };
+  let capturedBody: Record<string, unknown> | null = null;
+  const server = await startResponsesTestServer(
+    [
+      JSON.stringify({
+        status: 'learning_created',
+        reason: 'episodes converge on a stable operator learning',
+        learning: {
+          message_id: 'schema-learning-1',
+          identity_id: 'research-agent',
+          object_ref: 'learning:schema-learning-1',
+          source_episode_ids: ['schema-episode-1', 'schema-episode-2'],
+          summary: 'Fixed-window batching is the stable first-pass consolidation strategy.',
+          applicability: 'Use during MVP offline consolidation when evidence volume is still low.',
+          failure_conditions: 'Avoid applying when strong conflicting episodes dominate.',
+          evidence_refs: ['evidence-schema-1', 'evidence-schema-2'],
+          confidence: 0.84,
+          quality: {
+            observable: true,
+            linkable: true,
+            evaluatable: true,
+            distillable: true,
+            status: 'pass',
+            reasons: [],
+          },
+        },
+      }),
+    ],
+    (body) => {
+      capturedBody = body;
+    },
+  );
+
+  try {
+    const configPath = await writeConsolidateResponsesConfig(server.baseUrl);
+
+    assert.equal((await runLauncher(['init', '--agent-id', 'research-agent'], workspaceRoot, sharedEnv)).code, 0);
+    const agentRoot = join(sharedRoot, 'agents', 'research-agent');
+    const shortTermDir = join(agentRoot, 'memory', 'short-term');
+    await mkdir(shortTermDir, { recursive: true });
+
+    for (const episodeId of ['schema-episode-1', 'schema-episode-2']) {
+      const episode = {
+        schema_version: '1',
+        message_id: episodeId,
+        identity_id: 'research-agent',
+        object_kind: 'episode',
+        event_type: 'captured',
+        summary: `Episode ${episodeId}`,
+        evidence_refs: [`evidence-${episodeId}`],
+      };
+      await writeFile(join(shortTermDir, `${episodeId}.json`), `${JSON.stringify(episode, null, 2)}\n`, 'utf8');
+    }
+
+    const consolidateResult = await runReve(
+      ['consolidate', '--agent-id', 'research-agent', '--limit', '10', '--batch-size', '5'],
+      workspaceRoot,
+      {
+        ...sharedEnv,
+        OBSIDIAN_AGENT_MEMORY_SERVER_CODEX_CONFIG_PATH: configPath,
+      },
+    );
+    assert.equal(consolidateResult.code, 0);
+    assert(capturedBody);
+
+    const text = (capturedBody as { text?: { format?: { schema?: Record<string, unknown> } } }).text;
+    const schema = text?.format?.schema as {
+      required?: string[];
+      properties?: Record<string, unknown>;
+    };
+    assert.deepEqual(schema.required, ['status', 'reason', 'learning']);
+
+    const learningProperty = schema.properties?.learning as { anyOf?: Array<Record<string, unknown>> };
+    assert(Array.isArray(learningProperty.anyOf));
+    assert.equal(
+      learningProperty.anyOf?.some((entry) => entry.type === 'null'),
+      true,
+    );
   } finally {
     await server.close();
   }

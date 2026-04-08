@@ -3584,3 +3584,125 @@
 - 下一步:
   - 提交 implementation plan
   - 等待用户选择执行方式或直接进入执行阶段
+
+## R-0112 Task 5 规格审查（锁与失败回滚）结论
+
+- 日期: 2026-04-08
+- 目标: 审查 Task 5 在 `projects/reve/src/cli.ts` 与 `projects/reve/test/reve.test.ts` 的实现是否满足规格
+- 输入:
+  - 用户给定 Task 5 scope:
+    - 锁文件行为（`distill.lock` / `consolidate.lock`）
+    - 失败回滚（解析失败不留下半成品 `Learning`）
+    - run summary 显式记录失败与跳过原因
+  - 审查范围限定:
+    - `projects/reve/src/cli.ts`
+    - `projects/reve/test/reve.test.ts`
+- 动作:
+  - 逐条对照代码与测试用例核查 Task 5 条款
+  - 运行验证命令：
+    - `npm test`（工作目录 `projects/reve`）
+- 发现:
+  - 锁机制已实现为每 agent、每命令单独 lock 文件，路径位于 `agents/<agent_id>/runtime/locks/`
+  - `consolidate` 在 lock 已存在时快速失败并给出清晰错误消息
+  - `distill` 与 `consolidate` 使用分离锁文件，互不阻塞
+  - `consolidate` 在模型返回无法通过解析/校验时，不会写入部分 `Learning` 对象
+  - run summary 已包含 `status`、`failure_reason`、`skip_reason`，并在失败/跳过场景有对应测试
+  - 测试结果（事实）:
+    - `projects/reve/test/reve.test.ts` 共 15 个用例，全部通过（15/15）
+- 决策:
+  - Task 5 在给定审查范围内满足规格，无实际缺口
+- 未解问题:
+  - 无（限于本次 Task 5 审查范围）
+- 下一步:
+  - 进入后续任务或等待用户指定下一轮审查目标
+
+## R-0113 Task 5 代码质量复审（多批次失败安全边界）
+
+- 日期: 2026-04-08
+- 目标: 在已通过规格审查后，仅从代码质量角度复审 Task 5（锁文件、失败安全写入、run summary）是否存在隐藏风险
+- 输入:
+  - `projects/reve/src/cli.ts`
+  - `projects/reve/test/reve.test.ts`
+  - 任务范围说明（Task 5 only）
+- 动作:
+  - 逐行复查 `handleConsolidate` / `withCommandLock` / run summary 写入逻辑
+  - 对照新增测试，检查是否覆盖“多批次部分写入后失败”场景
+- 发现:
+  - 事实: 当前 `consolidate` 在批次循环内即时写入 `memory/long-term/*.json`；如果前序批次成功、后续批次抛错，已写入文件不会回滚
+  - 事实: 现有失败测试仅覆盖单批次失败（校验失败或 JSON 解析失败），未覆盖“前一批写入成功 + 后一批失败”的部分提交场景
+  - 风险判断: 若 Task 5 的“failure-safe writes”语义为“单次 consolidate 运行不产生部分提交”，当前实现存在缺口
+- 假设:
+  - 假设: Task 5 对“failure-safe writes”的预期是 run 级原子性，而不仅是“单个 batch 在失败前不写入”
+- 决策:
+  - 将该项作为代码质量层面的 `CHANGES_REQUIRED` 候选问题提出，等待按任务口径确认
+- 未解问题:
+  - “failure-safe writes”是否要求 run 级全量回滚
+- 下一步:
+  - 在审查反馈中给出具体问题定位与建议（延迟提交或临时文件两阶段落盘）
+
+## R-0114 Task 5 最终代码质量审查（仅限两文件）
+
+- 日期: 2026-04-08 09:09:09 CST
+- 目标: 对 Task 5 做最终代码质量审查，并仅评估 `projects/reve/src/cli.ts` 与 `projects/reve/test/reve.test.ts`
+- 输入:
+  - `/Users/screamcart-agent0/obsidian-agent-memory-server/projects/reve/src/cli.ts`
+  - `/Users/screamcart-agent0/obsidian-agent-memory-server/projects/reve/test/reve.test.ts`
+  - 用户说明：Task 5 既有问题已修复（全流程 staging、解析/校验失败测试、本地 responses server、无测试后门）
+- 动作:
+  - 读取并比对上述两文件当前改动
+  - 按锁语义、失败回滚、run summary 完整性逐项复核
+  - 复跑验证命令：`npm --prefix projects/reve test`
+- 发现:
+  - 事实: `consolidate` 已改为 staged write，批次阶段仅暂存，全部批次通过后才统一落盘，满足 run 级失败不落半成品
+  - 事实: `distill` 与 `consolidate` 采用独立 lock 文件；已存在锁时可明确失败退出
+  - 事实: run summary 在成功/失败/跳过三态下均有字段覆盖（`status`/`failure_reason`/`skip_reason`）
+  - 事实: 测试结果为 16/16 全通过（本地复跑）
+  - 事实: 在本次限定范围内未发现新的行为回归或阻断级代码质量问题
+- 决策:
+  - 对 Task 5 在本次限定审查范围内给出 `APPROVED`
+- 未解问题:
+  - 无（限本次范围）
+- 下一步:
+  - 等待用户指定下一任务或下一轮范围审查
+
+## R-0115 Reve Task 7 真实 provider 验证与 consolidate schema 兼容性
+
+- 日期: 2026-04-08
+- 目标: 用真实 provider 验证 `projects/reve` 的 `raw_capture -> short-term -> long-term` 离线链路，并确认失败点是在链路实现还是输入质量
+- 输入:
+  - `projects/reve/src/cli.ts`
+  - `projects/reve/test/reve.test.ts`
+  - 临时 shared root: `/tmp/reve-real-shared-FzoSNv`
+  - 真实 provider 配置:
+    - `OBSIDIAN_AGENT_MEMORY_SERVER_DISTILL_PROVIDER=codex`
+    - `OBSIDIAN_AGENT_MEMORY_SERVER_DISTILL_MODEL=gpt-5.2`
+    - `OBSIDIAN_AGENT_MEMORY_SERVER_CONSOLIDATE_PROVIDER=codex`
+    - `OBSIDIAN_AGENT_MEMORY_SERVER_CONSOLIDATE_MODEL=gpt-5.2`
+- 动作:
+  - 重跑真实 `distill`
+  - 检查 `short-term` episode 产物质量
+  - 多次重跑真实 `consolidate`，收集失败日志
+  - 用 `curl` 与独立 Node `fetch` 最小化复现 `responses` 请求，逐项比较成功/失败 body
+  - 新增测试，约束 consolidate 发给 provider 的 schema 形状
+  - 修复 consolidate 的 JSON schema 后，重跑真实 `consolidate` 与 `drive`
+- 发现:
+  - 事实: 真实 `distill` 已成功，2 条 `raw_capture` 均生成 `short-term` episode
+  - 事实: 生成的 2 条 episode 都是 `quality.status = needs_review`
+  - 事实: 其中至少 1 条 episode 把多个候选信号合并成一条更抽象的 summary，导致 episode 可追溯性和可评估性偏弱
+  - 事实: 旧版 consolidate 请求 schema 顶层仅要求 `status` 必填，`reason` 与 `learning` 可缺省；该 schema 对 `codex` 网关会稳定触发 `502 Bad Gateway`
+  - 事实: 将 consolidate schema 改为顶层 `status/reason/learning` 全必填，并允许 `learning = null` 后，真实 provider 请求恢复成功
+  - 事实: 修复后真实 `consolidate` 与 `drive` 都能成功完成，但结果是 `needs_more_evidence = 1`、`learning_created = 0`
+  - 事实: 当前样本没有产出 `Learning`，不是链路故障，而是输入 episode 仍然过于抽象，未达到长期归纳阈值
+- 假设:
+  - 假设: 若 short-term episode 继续保留“抽象规范性总结”“一条 episode 合并多个候选信号”“仅有间接 evidence ref”这些特征，长期蒸馏会长期偏向 `needs_more_evidence`
+- 决策:
+  - 将 consolidate provider 请求 schema 固定为兼容 `codex` 网关的版本：`status/reason/learning` 顶层必填，`learning` 可为 `null`
+  - 将当前真实验证结论记为“链路已跑通，但输入质量不足以形成长期记忆”
+  - MVP2 下一阶段若要提升长期产出率，应优先提升 short-term episode 的具体性、单一性和证据质量，而不是先扩长期记忆类型
+- 未解问题:
+  - 真实 provider 在 `needs_more_evidence` 与 `no_learning` 的边界上是否稳定
+  - short-term 是否应强制“一条 episode 只保留一个候选信号”，避免多候选合并
+  - evidence refs 仅保留 `input:<message_id>` 与抽象 turn 引用时，是否足以支撑后续长期蒸馏
+- 下一步:
+  - 在 `projects/reve/README.md` 补充真实 provider 验证后的人工评估要点
+  - 继续围绕 short-term 输入质量做下一轮收敛，而不是扩长期对象边界

@@ -22,6 +22,12 @@ bin/reve drive --agent-id research-agent --limit 20 --batch-size 10
 2. 再检查 `Learning`（`long-term`）是否正确归纳 episode 批次
 3. 回归测试场景优先用 `drive` 一次跑完整链路
 
+人工评估时优先看这几类信号：
+
+- `Episode` 是否保持单一、具体、可验证，不要把多个候选信号合并成一条抽象总结
+- `evidence_refs` 是否能直接回链到原始输入或明确 turn，而不是只有间接提示
+- 如果 `consolidate` 成功但结果是 `needs_more_evidence`，优先判断 short-term 是否仍然偏规范性表述、观察性不足，而不是直接怀疑长期蒸馏链路
+
 `bin/reve` 会在启动时自动加载仓库根目录的 `.env.agent-memory`。
 如需自定义路径，可设置 `OBSIDIAN_AGENT_MEMORY_SERVER_ENV_FILE`。
 
@@ -38,6 +44,7 @@ AI 过滤环境变量（MVP）：
 - 默认从 `~/.codex/config.toml` 的 `consolidate_model_provider` 与 `consolidate_model` 节。
 - 环境变量 `OBSIDIAN_AGENT_MEMORY_SERVER_CONSOLIDATE_PROVIDER` 可覆盖 `consolidate_model_provider`，`OBSIDIAN_AGENT_MEMORY_SERVER_CONSOLIDATE_MODEL` 可覆盖 `consolidate_model`。
 - `OPENAI_API_KEY` 同样会在需要 OpenAI 鉴权时被读取（与 distill 共用）。
+- 对 `codex` 类 `responses` 网关，当前 consolidate schema 已验证需要顶层 `status` / `reason` / `learning` 全必填；其中 `learning` 在 `no_learning` 或 `needs_more_evidence` 时返回 `null`。
 
 ## Long-Term Output
 
