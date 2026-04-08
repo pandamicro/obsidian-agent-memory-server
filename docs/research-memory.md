@@ -4038,3 +4038,41 @@
   - rollout 事件类型的兼容面目前只覆盖最小文本提取规则，后续可能仍需按真实样本扩展
 - 下一步:
   - 进入 MVP3 Task 4，收紧 distill prompt 与输出 schema
+
+## R-0125 MVP3 Task 3 收口：hydration 安全性与错误可观测性修正
+
+- 日期: 2026-04-08
+- 目标: 在 Task 3 进入提交前，修复 code review 暴露出的 hydration 安全性与 distill 可观测性问题
+- 输入:
+  - `projects/reve/src/cli.ts`
+  - `projects/reve/src/codex-rollout-hydrator.ts`
+  - `projects/reve/test/reve.test.ts`
+  - Task 3 code review 结论
+- 动作:
+  - 修正 prefilter，使仅有 `thread_id / turn_id` 的 `direct_input` 不再被提前拒绝
+  - 修正 rollout target 解析：给了 `turn_id` 时，找不到即 `target_not_found`，不再退化到按 `event` 误匹配
+  - 将 state DB fallback 从外部 `sqlite3` CLI 改为 Node 内建 `node:sqlite`
+  - 去掉 hydration evidence refs 中的绝对路径，改为可移植 ref
+  - 为逐条 distill 错误新增 `item_error_count / last_item_error`
+  - 新增回归测试覆盖上述风险点
+  - 运行 `npm --prefix projects/reve test`
+- 发现:
+  - 事实: 修正前，`direct_input` 若无 `session_id` 但有 `thread_id / turn_id`，仍会被 prefilter 误判为低信号并提前拒绝
+  - 事实: 修正前，hydrator 在 `turn_id` 未命中时会继续按 `event` 找第一条匹配，存在把上下文切到错误 turn 的风险
+  - 事实: 修正前，hydrator 会把 `rollout` 绝对路径写进 `evidence_refs`，不利于可移植性
+  - 事实: 修正前，逐条 distill 失败只会增加 `skipped`，不会暴露实现层错误摘要
+  - 事实: 修正后，`turn_id` 未命中时会稳定返回 `target_not_found`
+  - 事实: 修正后，state DB 查询失败会明确区分 `state_db_unreadable / state_db_query_failed`
+  - 事实: 修正后，`evidence_refs` 改为 `rollout_ref:<hash>`、`rollout_source:<source>` 与 `rollout_line:N`
+  - 事实: 修正后，distill run summary 会记录 `item_error_count / last_item_error`
+  - 事实: `projects/reve` 全量测试通过，当前结果为 `26/26`
+- 决策:
+  - 接受 Task 3 的安全默认值为“宁可返回 unavailable，也不注入可疑上下文”
+  - 接受 Task 3 在当前阶段记录逐条错误但不整体 fail run；是否升级为 fail-fast 留到后续任务再定
+  - 接受 `node:sqlite` 作为 MVP3 的最小 state DB fallback 手段
+- 未解问题:
+  - `node:sqlite` 当前仍会产生 `ExperimentalWarning`
+  - 仅靠 `event` 的 hydration 定位仍有歧义，后续若要扩大覆盖面，需要更稳的事件定位规则
+  - `rejected_missing_anchor` 统计字段当前仍接近占位状态
+- 下一步:
+  - 进入 MVP3 Task 4，收紧 distill prompt 与输出 schema

@@ -811,7 +811,7 @@ function prefilterRawCapture(raw: RawCaptureEvent): DistillPrefilterDecision {
   const hasHydrationAnchor = hasSessionAnchor || hasThreadAnchor || hasTurnAnchor;
   const hasEvidenceRefs = raw.evidence_refs.length > 0;
 
-  if (raw.source_kind === 'direct_input' && !hasAssistantSummary && !hasCandidates && !hasSessionAnchor) {
+  if (raw.source_kind === 'direct_input' && !hasAssistantSummary && !hasCandidates && !hasHydrationAnchor) {
     return { decision: 'reject', reason: hasEvidenceRefs ? 'low_signal' : 'missing_anchor' };
   }
 
@@ -1128,6 +1128,8 @@ async function handleDistill(agentId: string, limitRaw: string | undefined, root
     let prefilterRejected = 0;
     let rejectedLowSignal = 0;
     let rejectedMissingAnchor = 0;
+    let itemErrorCount = 0;
+    let lastItemError: string | null = null;
     let runtimeConfig: ModelProviderRuntime | null = null;
     const hydrator = createCodexRolloutHydrator();
 
@@ -1218,8 +1220,10 @@ async function handleDistill(agentId: string, limitRaw: string | undefined, root
           const shortTermPath = join(shortTermDir, `${observedAt.replaceAll(':', '-')}-${shortTermId}.json`);
           await writeJsonFile(shortTermPath, shortTermObject);
           distilledCount += 1;
-        } catch {
+        } catch (error) {
           skippedCount += 1;
+          itemErrorCount += 1;
+          lastItemError = error instanceof Error ? error.message : String(error);
         }
       }
 
@@ -1241,6 +1245,8 @@ async function handleDistill(agentId: string, limitRaw: string | undefined, root
         prefilter_rejected: prefilterRejected,
         rejected_low_signal: rejectedLowSignal,
         rejected_missing_anchor: rejectedMissingAnchor,
+        item_error_count: itemErrorCount,
+        last_item_error: lastItemError,
         status,
         failure_reason: failureReason,
         skip_reason: skipReason,

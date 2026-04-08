@@ -1,17 +1,15 @@
 import { readFile } from 'node:fs/promises';
 import { accessSync, constants } from 'node:fs';
-import { execFile } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { promisify } from 'node:util';
+import { DatabaseSync } from 'node:sqlite';
 import type {
   ContextHydrator,
   HydratedContextWindow,
   HydrationInput,
   HydrationResult,
 } from './context-hydrator.ts';
-
-const execFileAsync = promisify(execFile);
 
 type HydratorOptions = {
   stateDbPath?: string;
@@ -23,6 +21,11 @@ type RolloutEvent = {
   payload?: Record<string, unknown>;
   [key: string]: unknown;
 };
+
+type RolloutLookupResult =
+  | { status: 'found'; rolloutPath: string }
+  | { status: 'not_found' }
+  | { status: 'state_db_failure'; reason: 'state_db_unreadable' | 'state_db_query_failed' };
 
 function canReadPath(path: string): boolean {
   try {
@@ -160,6 +163,7 @@ function findCenterIndex(events: RolloutEvent[], input: HydrationInput): number 
     if (turnIndex >= 0) {
       return turnIndex;
     }
+    return null;
   }
 
   const targetEvent = asTrimmedString(input.event)?.toLowerCase();
@@ -177,40 +181,45 @@ function findCenterIndex(events: RolloutEvent[], input: HydrationInput): number 
   return null;
 }
 
-function escapeSqlText(value: string): string {
-  return value.replaceAll("'", "''");
-}
-
 async function lookupRolloutPathFromStateDb(
   stateDbPath: string,
   threadId: string | null,
   sessionId: string | null,
-): Promise<string | null> {
+): Promise<RolloutLookupResult> {
   if (!threadId && !sessionId) {
-    return null;
+    return { status: 'not_found' };
   }
   if (!canReadPath(stateDbPath)) {
-    return null;
+    return { status: 'state_db_failure', reason: 'state_db_unreadable' };
   }
 
   const ids = [threadId, sessionId].filter((value): value is string => Boolean(value));
   if (ids.length === 0) {
-    return null;
+    return { status: 'not_found' };
   }
 
-  for (const id of ids) {
-    const sql = `select rollout_path from threads where id='${escapeSqlText(id)}' and rollout_path is not null limit 1;`;
-    try {
-      const { stdout } = await execFileAsync('sqlite3', [stateDbPath, sql]);
-      const candidate = stdout.trim();
+  let db: DatabaseSync | null = null;
+  try {
+    db = new DatabaseSync(stateDbPath, { readonly: true });
+    const statement = db.prepare('select rollout_path from threads where id = ? and rollout_path is not null limit 1');
+    for (const id of ids) {
+      const row = statement.get(id) as { rollout_path?: unknown } | undefined;
+      const candidate = asTrimmedString(row?.rollout_path);
       if (candidate) {
-        return candidate;
+        return { status: 'found', rolloutPath: candidate };
       }
-    } catch {
-      return null;
     }
+    return { status: 'not_found' };
+  } catch {
+    return { status: 'state_db_failure', reason: 'state_db_query_failed' };
+  } finally {
+    db?.close();
   }
-  return null;
+}
+
+function makePortableRolloutRef(rolloutPath: string): string {
+  const digest = createHash('sha256').update(rolloutPath).digest('hex').slice(0, 16);
+  return `rollout_ref:${digest}`;
 }
 
 export function createCodexRolloutHydrator(options: HydratorOptions = {}): ContextHydrator {
@@ -223,15 +232,18 @@ export function createCodexRolloutHydrator(options: HydratorOptions = {}): Conte
       let source: 'rollout_hint' | 'state_db' = 'rollout_hint';
 
       if (!rolloutPath || !canReadPath(rolloutPath)) {
-        const fallbackPath = await lookupRolloutPathFromStateDb(
+        const lookup = await lookupRolloutPathFromStateDb(
           stateDbPath,
           asTrimmedString(input.thread_id),
           asTrimmedString(input.session_id),
         );
-        if (!fallbackPath) {
+        if (lookup.status === 'state_db_failure') {
+          return { status: 'unavailable', reason: lookup.reason };
+        }
+        if (lookup.status !== 'found') {
           return { status: 'unavailable', reason: 'rollout_not_found' };
         }
-        rolloutPath = fallbackPath;
+        rolloutPath = lookup.rolloutPath;
         source = 'state_db';
       }
 
@@ -262,7 +274,7 @@ export function createCodexRolloutHydrator(options: HydratorOptions = {}): Conte
         status: 'success',
         source,
         context_window: window,
-        evidence_refs: [`rollout:${rolloutPath}`, ...evidenceRefs],
+        evidence_refs: [makePortableRolloutRef(rolloutPath), `rollout_source:${source}`, ...evidenceRefs],
       };
     },
   };

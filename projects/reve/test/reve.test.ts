@@ -355,7 +355,8 @@ test('codex rollout hydrator slices compact context around turn id', async () =>
     assert.match(hydrated.context_window.user[0] ?? '', /user asks about memory quality/i);
     assert.match(hydrated.context_window.assistant[0] ?? '', /assistant gives distill guidance/i);
     assert.match(hydrated.context_window.tool[0] ?? '', /tool output ok/i);
-    assert(hydrated.evidence_refs.some((ref) => ref.includes('rollout:')));
+    assert(hydrated.evidence_refs.some((ref) => ref.startsWith('rollout_ref:')));
+    assert.equal(hydrated.evidence_refs.some((ref) => ref.includes(rolloutPath)), false);
   }
 });
 
@@ -366,6 +367,7 @@ test('codex rollout hydrator returns unavailable when target turn is missing', a
     JSON.stringify({ type: 'session_meta', payload: { id: 'thread-missing' } }),
     JSON.stringify({ type: 'user_message', payload: { turn_id: 'turn-a', text: 'first user message' } }),
     JSON.stringify({ type: 'assistant_message', payload: { turn_id: 'turn-a', text: 'first assistant message' } }),
+    JSON.stringify({ type: 'stop', payload: { text: 'session stopped' } }),
   ];
   await writeFile(rolloutPath, `${rolloutLines.join('\n')}\n`, 'utf8');
 
@@ -381,6 +383,72 @@ test('codex rollout hydrator returns unavailable when target turn is missing', a
   assert.equal(hydrated.status, 'unavailable');
   if (hydrated.status === 'unavailable') {
     assert.equal(hydrated.reason, 'target_not_found');
+  }
+});
+
+test('distill run summary records per-item errors instead of silently hiding them', async () => {
+  const workspaceRoot = await mkdtemp(join(tmpdir(), 'agent-reve-distill-item-errors-'));
+  const sharedRoot = await mkdtemp(join(tmpdir(), 'agent-reve-distill-item-errors-shared-'));
+  const sharedEnv = {
+    OBSIDIAN_AGENT_MEMORY_SERVER_SHARED_ROOT: sharedRoot,
+  };
+  assert.equal((await runLauncher(['init', '--agent-id', 'research-agent'], workspaceRoot, sharedEnv)).code, 0);
+
+  assert.equal(
+    (
+      await runLauncher(
+        ['run', '--agent-id', 'research-agent', '--input', '[hook flush] session=s3\nassistant=done\ncandidates:\n- environmental_outcome/supporting: Bash ok [turn:t3]'],
+        workspaceRoot,
+        sharedEnv,
+      )
+    ).code,
+    0,
+  );
+
+  const server = await startResponsesTestServer(['{not-json']);
+
+  try {
+    const fakeHome = await writeDistillResponsesConfig(server.baseUrl);
+    const distillResult = await runReve(
+      ['distill', '--agent-id', 'research-agent', '--limit', '10'],
+      workspaceRoot,
+      { ...sharedEnv, HOME: fakeHome },
+    );
+    assert.equal(distillResult.code, 0);
+    assert.match(distillResult.stdout, /Distilled short-term records: 0/);
+
+    const runsDir = join(sharedRoot, 'agents', 'research-agent', 'runs');
+    const runFiles = await readdir(runsDir);
+    let successSummary: null | Record<string, unknown> = null;
+    for (const file of runFiles) {
+      const summary = JSON.parse(await readFile(join(runsDir, file), 'utf8'));
+      if (summary.distill_source === 'raw-capture' && summary.status === 'success') {
+        successSummary = summary;
+      }
+    }
+    assert(successSummary);
+    assert.equal(successSummary.item_error_count, 1);
+    assert.equal(typeof successSummary.last_item_error, 'string');
+  } finally {
+    await server.close();
+  }
+});
+
+test('codex rollout hydrator distinguishes state-db failure from rollout-not-found', async () => {
+  const workspaceRoot = await mkdtemp(join(tmpdir(), 'agent-reve-hydrator-state-db-failure-'));
+  const missingStateDbPath = join(workspaceRoot, 'missing-state.sqlite');
+  const hydrator = createCodexRolloutHydrator({ stateDbPath: missingStateDbPath });
+  const hydrated = await hydrator.hydrate({
+    session_id: 'session-no-db',
+    thread_id: 'thread-no-db',
+    turn_id: 'turn-no-db',
+    event: 'stop',
+    rollout_path_hint: null,
+  });
+
+  assert.equal(hydrated.status, 'unavailable');
+  if (hydrated.status === 'unavailable') {
+    assert.equal(hydrated.reason, 'state_db_unreadable');
   }
 });
 
@@ -435,7 +503,7 @@ test('distill hydrates candidate raw capture via rollout_path_hint before provid
       signal_type: 'environmental_outcome',
       polarity: 'supporting',
       summary: 'hydrated evidence indicates reusable outcome',
-      evidence_refs: ['rollout:turn-hydrated'],
+      evidence_refs: ['rollout_line:2'],
       quality: {
         observable: true,
         linkable: true,
@@ -464,6 +532,87 @@ test('distill hydrates candidate raw capture via rollout_path_hint before provid
     const prompt = String((capturedBody as { input?: string }).input ?? '');
     assert.match(prompt, /hydrated_context/i);
     assert.match(prompt, /assistant reports verified outcome/i);
+  } finally {
+    await server.close();
+  }
+});
+
+test('distill does not reject hydratable direct input with thread or turn anchors', async () => {
+  const workspaceRoot = await mkdtemp(join(tmpdir(), 'agent-reve-distill-hydration-anchor-'));
+  const sharedRoot = await mkdtemp(join(tmpdir(), 'agent-reve-distill-hydration-anchor-shared-'));
+  const sharedEnv = {
+    OBSIDIAN_AGENT_MEMORY_SERVER_SHARED_ROOT: sharedRoot,
+  };
+  assert.equal((await runLauncher(['init', '--agent-id', 'research-agent'], workspaceRoot, sharedEnv)).code, 0);
+
+  const rolloutPath = join(workspaceRoot, 'rollout-anchor.jsonl');
+  await writeFile(
+    rolloutPath,
+    `${[
+      JSON.stringify({ type: 'session_meta', payload: { id: 'thread-anchor' } }),
+      JSON.stringify({ type: 'user_message', payload: { turn_id: 'turn-anchor', text: 'user asks anchored question' } }),
+      JSON.stringify({ type: 'assistant_message', payload: { turn_id: 'turn-anchor', text: 'assistant gives anchored answer' } }),
+    ].join('\n')}\n`,
+    'utf8',
+  );
+
+  const agentRoot = join(sharedRoot, 'agents', 'research-agent');
+  const rawCaptureDir = join(agentRoot, 'memory', 'raw-capture');
+  await writeRawCaptureRecord(rawCaptureDir, {
+    schema_version: '1',
+    message_id: 'raw-anchor-1',
+    identity_id: 'research-agent',
+    object_kind: 'raw_capture',
+    object_ref: 'raw-capture:raw-anchor-1',
+    event_type: 'captured',
+    evidence_refs: ['input:raw-anchor-1'],
+    observed_at: '2026-04-08T00:00:00.000Z',
+    source_kind: 'direct_input',
+    session_id: null,
+    thread_id: 'thread-anchor',
+    turn_id: 'turn-anchor',
+    event: 'stop',
+    rollout_path_hint: rolloutPath,
+    workspace_root: workspaceRoot,
+    assistant_summary: null,
+    candidates: [],
+    input: 'this record should use hydration instead of prefilter reject',
+  }, 'raw-anchor-1');
+
+  const seenBodies: Array<Record<string, unknown>> = [];
+  const server = await startResponsesTestServer([
+    JSON.stringify({
+      event_type: 'captured',
+      object_kind: 'episode',
+      signal_type: 'environmental_outcome',
+      polarity: 'supporting',
+      summary: 'anchored hydration worked',
+      evidence_refs: ['rollout_line:2'],
+      quality: {
+        observable: true,
+        linkable: true,
+        evaluatable: true,
+        distillable: true,
+        status: 'pass',
+        reasons: [],
+      },
+      confidence: 0.75,
+      parser_reason: 'anchor-hydration-test',
+    }),
+  ], (body) => {
+    seenBodies.push(body);
+  });
+
+  try {
+    const fakeHome = await writeDistillResponsesConfig(server.baseUrl);
+    const distillResult = await runReve(
+      ['distill', '--agent-id', 'research-agent', '--limit', '10'],
+      workspaceRoot,
+      { ...sharedEnv, HOME: fakeHome },
+    );
+    assert.equal(distillResult.code, 0);
+    assert.match(distillResult.stdout, /Distilled short-term records: 1/);
+    assert.equal(seenBodies.length, 1);
   } finally {
     await server.close();
   }
@@ -1679,7 +1828,7 @@ test('drive orchestrates distill and consolidate end-to-end with idempotent reru
     await writeFile(join(rawCaptureDir, `${capture.message_id}.json`), `${JSON.stringify(capture, null, 2)}\n`, 'utf8');
   }
 
-  const firstDrive = await runReveBin(
+  const firstDrive = await runReve(
     ['drive', '--agent-id', 'research-agent', '--limit', '10', '--batch-size', '5'],
     workspaceRoot,
     driveEnv,
@@ -1705,7 +1854,7 @@ test('drive orchestrates distill and consolidate end-to-end with idempotent reru
   assert.equal(firstDriveSummaries.length, 1);
   assert.equal(firstDriveSummaries[0]?.status, 'success');
 
-  const secondDrive = await runReveBin(
+  const secondDrive = await runReve(
     ['drive', '--agent-id', 'research-agent', '--limit', '10', '--batch-size', '5'],
     workspaceRoot,
     driveEnv,
