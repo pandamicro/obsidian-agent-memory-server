@@ -4209,3 +4209,27 @@
   - 真实样本仍缺结构化锚点，MVP3 还不能证明 hydration 能提高 episode 产出质量
 - 下一步:
   - 将后续重点转到 raw_capture 结构化覆盖率提升，再用新的带锚点批次重复 Task 6
+
+## R-0130 unity-optimization-agent 高 prefilter_rejected 根因分析
+
+- 日期: 2026-04-08
+- 目标: 解释为什么 `unity-optimization-agent` 在 MVP3 Task 6 中几乎全部落入 `prefilter_rejected`
+- 输入:
+  - `agents/unity-optimization-agent/memory/raw-capture/*.json`
+  - `projects/reve/src/cli.ts`
+- 动作:
+  - 抽样检查全部 8 条 `raw_capture`
+  - 聚合统计 `source_kind / session_id / thread_id / turn_id / assistant_summary / candidates`
+  - 对照 `prefilterRawCapture` 的拒绝条件
+- 发现:
+  - 事实: 8/8 条记录的 `source_kind` 都是 `direct_input`
+  - 事实: 8/8 条记录的 `session_id / thread_id / turn_id` 都为空
+  - 事实: 8/8 条记录的 `assistant_summary` 为空，`candidates` 为空
+  - 事实: 其中 6/8 条 `input` 文本内部包含 `[hook flush] ... assistant= ... candidates= ...`，但这些内容没有被结构化解析到字段层
+  - 事实: `prefilterRawCapture` 当前对 `direct_input && 无 assistant_summary && 无 candidates && 无 hydration anchor` 直接拒绝，这是命中设计预期，不是实现异常
+  - 事实: 因为这些记录在字段层仍是“空壳 direct_input”，reve 无法把它们识别为可 hydration 或可 raw-only distill 的候选
+- 决策:
+  - 将 `unity-optimization-agent` 的高 `prefilter_rejected` 判定为采集结构问题，不判定为 distill 规则过严
+  - 后续优先修复“文本化 hook flush 没被结构化落盘”的采集路径，而不是放松 prefilter
+- 下一步:
+  - 优先检查 `unity-optimization-agent` 相关 hooks / launcher 路径，为什么 `[hook flush]` 文本没有进入 `assistant_summary / candidates / session_id`
