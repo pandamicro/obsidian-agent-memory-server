@@ -3854,3 +3854,48 @@
   - hooks 哪个事件最适合写入这些 lookup 键：`UserPromptSubmit`、`Stop`，还是二者配合
 - 下一步:
   - 若进入 MVP3 设计，应围绕“raw_capture 最小锚点增强 + distill 时 rollout hydration”展开，而不是先做 direct_input 大文本扩容
+
+## R-0120 MVP3 设计确认：prefilter + generic hydrator + conservative distill
+
+- 日期: 2026-04-08
+- 目标: 在不扩大动态记忆边界的前提下，为 MVP3 固化一个可执行的 Episode 质量提升设计方向
+- 输入:
+  - `docs/plans/2026-04-07-reve-mvp2-offline-distillation-design.md`
+  - `docs/plans/2026-04-08-reve-mvp2-progress-summary.md`
+  - `docs/portable-agent-contract/dynamic-memory.md`
+  - `docs/portable-agent-contract/dynamic-memory/memory-distillation.md`
+  - R-0118 与 R-0119 的路径分析
+  - 用户新增约束:
+    - `raw_capture` 阶段目前没有筛选
+    - `distill` 应先过滤明确低质量 `raw_capture`
+    - 只对有潜在蒸馏价值的对象做 rollout hydration
+    - distill prompt 必须无倾向性，允许大多数输入失败
+- 动作:
+  - 基于 MVP2 问题回顾，提出三条 MVP3 路径并与用户确认方向
+  - 额外确认 hydration 在设计文档中的定位应为“抽象接口优先”，而非直接写死 Codex 前提
+  - 收敛出 MVP3 正式设计草案
+- 发现:
+  - 事实: 单纯做 episode 侧低质量拦截不足以从根本上提高产出质量，因为 direct input 当前缺 outcome 邻域
+  - 事实: 只扩大 `direct_input` 正文，无法稳定补到 assistant / tool outcome，质量提升上限有限
+  - 事实: 若先做 `prefilter`，可以把明显无价值 `raw_capture` 挡在 hydration 与推理之前，降低成本与噪音
+  - 事实: 若只对候选对象做 context hydration，更符合当前“提高质量而不是提高产量”的目标
+  - 事实: distill prompt 若不显式要求“默认保守、允许失败”，模型会倾向把弱信号也包装成 episode，继续污染 short-term
+  - 事实: 为保持系统可移植性，设计层只能冻结 `ContextHydrator` 这一职责边界，不能把 `state_5.sqlite` / `rollout jsonl` 当作系统总前提
+- 决策:
+  - MVP3 主路径确定为：
+    - `raw_capture prefilter`
+    - `generic ContextHydrator`
+    - `CodexRolloutHydrator` 作为首个验证实现
+    - `conservative distill prompt`
+  - `raw_capture` 只补最小锚点字段，不扩大量正文
+  - distill 结果需要显式区分多类 rejection / creation reason，便于 operator 评估
+- 假设:
+  - 假设: hooks 提供的 `session_id / thread_id / turn_id` 足以支撑最小可行的 rollout hydration
+  - 假设: 在真实样本中，episode 数量下降但质量提高，会明显改善后续 `consolidate` 的长期产出质量
+- 未解问题:
+  - `turn_id -> rollout slice` 的稳定映射规则还未验证
+  - hydration window 的最小大小还未验证
+  - prefilter 是完全规则化还是加入轻推理，仍需后续实现阶段决定
+- 下一步:
+  - 输出 MVP3 设计文档
+  - 进入 MVP3 implementation plan 拆解
