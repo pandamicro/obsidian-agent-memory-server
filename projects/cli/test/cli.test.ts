@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, readFile, readdir, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, realpath, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { spawn } from 'node:child_process';
@@ -141,6 +141,11 @@ test('run writes raw-capture event and run summary', async () => {
   assert.equal(rawCaptureEvent.event_type, 'captured');
   assert.equal(rawCaptureEvent.object_kind, 'raw_capture');
   assert.equal(rawCaptureEvent.source_kind, 'direct_input');
+  assert.equal(rawCaptureEvent.session_id, null);
+  assert.equal(rawCaptureEvent.thread_id, null);
+  assert.equal(rawCaptureEvent.turn_id, null);
+  assert.equal(rawCaptureEvent.event, 'direct-input');
+  assert.equal(rawCaptureEvent.workspace_root, await realpath(workspaceRoot));
   assert.equal(runSummary.agent_id, 'research-agent');
   assert.equal(runSummary.raw_capture_count, 1);
 });
@@ -219,7 +224,7 @@ test('run parses hook flush candidates into structured raw-capture fields', asyn
   assert.equal(initResult.code, 0);
 
   const flushInput = [
-    '[hook flush] session=session-xyz',
+    '[hook flush] session=session-xyz thread=thread-xyz turn=turn-xyz event=stop',
     'agent=research-agent',
     `workspace=${workspaceRoot}`,
     'assistant=handled task',
@@ -243,6 +248,9 @@ test('run parses hook flush candidates into structured raw-capture fields', asyn
 
   assert.equal(rawEvent.source_kind, 'hook_flush');
   assert.equal(rawEvent.session_id, 'session-xyz');
+  assert.equal(rawEvent.thread_id, 'thread-xyz');
+  assert.equal(rawEvent.turn_id, 'turn-xyz');
+  assert.equal(rawEvent.event, 'stop');
   assert.equal(rawEvent.assistant_summary, 'handled task');
   assert.equal(rawEvent.candidates.length, 1);
   assert.equal(rawEvent.candidates[0].signal_type, 'environmental_outcome');

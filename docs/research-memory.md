@@ -3944,3 +3944,32 @@
 - 下一步:
   - 将 implementation plan 作为执行基线
   - 若用户选择继续实现，则按任务顺序逐步落地
+
+## R-0122 MVP3 Task 1 验证：raw_capture 锚点字段补齐
+
+- 日期: 2026-04-08
+- 目标: 完成 MVP3 Task 1，为后续 hydration 补齐 `raw_capture` 最小锚点字段
+- 输入:
+  - `projects/cli/src/cli.ts`
+  - `projects/cli/test/cli.test.ts`
+  - `scripts/codex-hooks/contracts.ts`
+  - `scripts/codex-hooks/driver.ts`
+  - `docs/plans/2026-04-08-reve-mvp3-episode-quality-implementation-plan.md`
+- 动作:
+  - 为 CLI `run` 写入路径补充锚点字段测试
+  - 扩展 hook flush 解析，支持从 header 提取 `thread/turn/event`
+  - 复核 hooks 合同与 driver 是否已具备 `thread_id/turn_id` 透传能力
+  - 运行 `npm --prefix projects/cli test`
+- 发现:
+  - 事实: `raw_capture` 现在会稳定落盘 `thread_id`、`turn_id`、`event`，并在 direct input 情况下显式写入 `null` / `direct-input`
+  - 事实: `workspace_root` 现在在没有 hook flush 显式传入时，也会回退到当前运行工作区路径
+  - 事实: `scripts/codex-hooks/contracts.ts` 中的 `normalizeHookEnvelope` 之前就已透传 `thread_id/turn_id`
+  - 事实: 本轮实现不需要修改 `scripts/codex-hooks/contracts.ts` 或 `scripts/codex-hooks/driver.ts`
+  - 事实: `npm --prefix projects/cli test` 通过，当前结果为 `11/11`
+- 决策:
+  - 接受 Task 1 的最小实现范围只落在 `projects/cli`
+  - 将 hooks 合同与 driver 维持不变，后续若 hydration 需要更多锚点再增量扩展
+- 未解问题:
+  - hook flush producer 是否应强制始终带上 `event=...`，当前仍允许回退到 `hook-flush`
+- 下一步:
+  - 进入 MVP3 Task 2，为 `reve distill` 增加 prefilter 与 rejection reason

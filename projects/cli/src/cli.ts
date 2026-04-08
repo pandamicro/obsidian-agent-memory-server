@@ -265,6 +265,9 @@ type ParsedShortTermCandidate = {
 type ParsedShortTermInput = {
   source_kind: 'hook_flush' | 'direct_input';
   session_id?: string;
+  thread_id?: string;
+  turn_id?: string;
+  event?: string;
   workspace_root?: string;
   assistant_summary?: string;
   candidates: ParsedShortTermCandidate[];
@@ -281,11 +284,40 @@ type RawCaptureEvent = {
   observed_at: string;
   source_kind: 'hook_flush' | 'direct_input';
   session_id: string | null;
+  thread_id: string | null;
+  turn_id: string | null;
+  event: string;
   workspace_root: string | null;
   assistant_summary: string | null;
   candidates: ParsedShortTermCandidate[];
   input: string;
 };
+
+function parseHookFlushHeaderMeta(firstLine: string): Record<string, string> {
+  const prefix = '[hook flush]';
+  if (!firstLine.startsWith(prefix)) {
+    return {};
+  }
+  const tail = firstLine.slice(prefix.length).trim();
+  if (!tail) {
+    return {};
+  }
+
+  const meta: Record<string, string> = {};
+  for (const token of tail.split(/\s+/u)) {
+    const separator = token.indexOf('=');
+    if (separator <= 0) {
+      continue;
+    }
+    const key = token.slice(0, separator).trim();
+    const value = token.slice(separator + 1).trim();
+    if (!key || !value) {
+      continue;
+    }
+    meta[key] = value;
+  }
+  return meta;
+}
 
 function parseHookFlushInput(input: string): ParsedShortTermInput {
   const lines = input.split('\n').map((line) => line.trim());
@@ -298,10 +330,13 @@ function parseHookFlushInput(input: string): ParsedShortTermInput {
     };
   }
 
-  const sessionMatch = firstLine.match(/\bsession=([^\s]+)/);
+  const headerMeta = parseHookFlushHeaderMeta(firstLine);
   const result: ParsedShortTermInput = {
     source_kind: 'hook_flush',
-    session_id: sessionMatch?.[1],
+    session_id: headerMeta.session,
+    thread_id: headerMeta.thread,
+    turn_id: headerMeta.turn,
+    event: headerMeta.event,
     candidates: [],
   };
 
@@ -448,7 +483,7 @@ async function promptMountSelection(workspaceRoot: string, agents: AgentSummary[
   }
 }
 
-async function handleRun(agentId: string, input: string, rootDir: string) {
+async function handleRun(agentId: string, input: string, rootDir: string, workspaceRoot: string) {
   const agentRoot = join(rootDir, 'agents', agentId);
   const rawCaptureDir = join(agentRoot, 'memory', 'raw-capture');
   const shortTermDir = join(agentRoot, 'memory', 'short-term');
@@ -475,7 +510,12 @@ async function handleRun(agentId: string, input: string, rootDir: string) {
     observed_at: observedAt,
     source_kind: parsedInput.source_kind,
     session_id: parsedInput.session_id ?? null,
-    workspace_root: parsedInput.workspace_root ?? null,
+    thread_id: parsedInput.thread_id ?? null,
+    turn_id: parsedInput.turn_id ?? null,
+    event:
+      parsedInput.event ??
+      (parsedInput.source_kind === 'hook_flush' ? 'hook-flush' : 'direct-input'),
+    workspace_root: parsedInput.workspace_root ?? workspaceRoot,
     assistant_summary: parsedInput.assistant_summary ?? null,
     candidates: parsedInput.candidates,
     input,
@@ -599,7 +639,7 @@ async function main() {
       throw new Error('Missing required option: --input');
     }
     await assertAgentVisible(agentId, rootDir, workspaceRoot);
-    await handleRun(agentId, input, rootDir);
+    await handleRun(agentId, input, rootDir, workspaceRoot);
     return;
   }
 
