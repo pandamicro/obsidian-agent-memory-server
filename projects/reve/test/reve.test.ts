@@ -155,6 +155,28 @@ async function writeConsolidateResponsesConfig(baseUrl: string) {
   return configPath;
 }
 
+async function writeDistillResponsesConfig(baseUrl: string) {
+  const fakeHome = await mkdtemp(join(tmpdir(), 'agent-reve-distill-config-home-'));
+  const codexDir = join(fakeHome, '.codex');
+  await mkdir(codexDir, { recursive: true });
+  const configPath = join(codexDir, 'config.toml');
+  await writeFile(
+    configPath,
+    [
+      'model_provider = "responses-test"',
+      'model = "responses-test-model"',
+      '',
+      '[model_providers.responses-test]',
+      `base_url = "${baseUrl}"`,
+      'wire_api = "responses"',
+      'requires_openai_auth = false',
+      '',
+    ].join('\n'),
+    'utf8',
+  );
+  return fakeHome;
+}
+
 test('distill converts pending raw-capture records into short-term memory via mock model', async () => {
   const workspaceRoot = await mkdtemp(join(tmpdir(), 'agent-reve-distill-'));
   const sharedRoot = await mkdtemp(join(tmpdir(), 'agent-reve-shared-'));
@@ -214,6 +236,88 @@ test('distill converts pending raw-capture records into short-term memory via mo
   }
 });
 
+test('distill prefilter rejects low-signal direct input before provider request', async () => {
+  const workspaceRoot = await mkdtemp(join(tmpdir(), 'agent-reve-distill-prefilter-'));
+  const sharedRoot = await mkdtemp(join(tmpdir(), 'agent-reve-distill-prefilter-shared-'));
+  const sharedEnv = {
+    OBSIDIAN_AGENT_MEMORY_SERVER_SHARED_ROOT: sharedRoot,
+  };
+  assert.equal((await runLauncher(['init', '--agent-id', 'research-agent'], workspaceRoot, sharedEnv)).code, 0);
+  assert.equal(
+    (
+      await runLauncher(
+        ['run', '--agent-id', 'research-agent', '--input', 'please review this later'],
+        workspaceRoot,
+        sharedEnv,
+      )
+    ).code,
+    0,
+  );
+
+  const seenBodies: Array<Record<string, unknown>> = [];
+  const server = await startResponsesTestServer([
+    JSON.stringify({
+      event_type: 'captured',
+      object_kind: 'episode',
+      signal_type: 'explicit',
+      polarity: 'supporting',
+      summary: 'should never be used',
+      evidence_refs: ['input:test'],
+      quality: {
+        observable: true,
+        linkable: true,
+        evaluatable: true,
+        distillable: true,
+        status: 'pass',
+        reasons: [],
+      },
+      confidence: 0.5,
+      parser_reason: 'unexpected-provider-call',
+    }),
+  ], (body) => {
+    seenBodies.push(body);
+  });
+
+  try {
+    const fakeHome = await writeDistillResponsesConfig(server.baseUrl);
+    const distillResult = await runReve(
+      ['distill', '--agent-id', 'research-agent', '--limit', '10'],
+      workspaceRoot,
+      { ...sharedEnv, HOME: fakeHome },
+    );
+    assert.equal(distillResult.code, 0);
+    assert.match(distillResult.stdout, /Distilled short-term records: 0/);
+    assert.equal(seenBodies.length, 0);
+
+    const agentRoot = join(sharedRoot, 'agents', 'research-agent');
+    const shortTermFiles = await readdir(join(agentRoot, 'memory', 'short-term'));
+    assert.equal(shortTermFiles.length, 0);
+
+    const runFiles = await readdir(join(agentRoot, 'runs'));
+    let successSummary: null | Record<string, unknown> = null;
+    for (const file of runFiles) {
+      const summary = JSON.parse(await readFile(join(agentRoot, 'runs', file), 'utf8'));
+      if (
+        summary.distill_source === 'raw-capture'
+        && summary.status === 'success'
+        && summary.provider === 'responses-test'
+      ) {
+        successSummary = summary;
+      }
+    }
+    assert(successSummary);
+    if (successSummary) {
+      assert.equal(successSummary.scanned, 1);
+      assert.equal(successSummary.distilled, 0);
+      assert.equal(successSummary.skipped, 1);
+      assert.equal(successSummary.prefilter_rejected, 1);
+      assert.equal(successSummary.rejected_low_signal, 1);
+    }
+  } finally {
+    await server.close();
+  }
+});
+
 test('distill provider/model can be resolved from ~/.codex/config.toml', async () => {
   const workspaceRoot = await mkdtemp(join(tmpdir(), 'agent-reve-distill-config-'));
   const sharedRoot = await mkdtemp(join(tmpdir(), 'agent-reve-config-shared-'));
@@ -237,7 +341,13 @@ test('distill provider/model can be resolved from ~/.codex/config.toml', async (
   assert.equal(
     (
       await runLauncher(
-        ['run', '--agent-id', 'research-agent', '--input', 'capture for config provider test'],
+        [
+          'run',
+          '--agent-id',
+          'research-agent',
+          '--input',
+          '[hook flush] session=config-s1\nassistant=config provider path verified\ncandidates:\n- environmental_outcome/supporting: provider config loaded [turn:config-t1]',
+        ],
         workspaceRoot,
         sharedEnv,
       )

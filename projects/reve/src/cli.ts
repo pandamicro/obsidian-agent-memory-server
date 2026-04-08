@@ -62,6 +62,10 @@ type DistilledShortTerm = {
   parser_reason: string;
 };
 
+type DistillPrefilterDecision =
+  | { decision: 'reject'; reason: 'low_signal' | 'missing_anchor' }
+  | { decision: 'candidate' };
+
 type ModelProviderRuntime = {
   provider: string;
   model: string;
@@ -791,6 +795,19 @@ async function distillRawCapture(raw: RawCaptureEvent): Promise<DistilledShortTe
   throw new Error(`Unsupported distill provider: ${runtime.provider} (wire API: ${runtime.wireApi})`);
 }
 
+function prefilterRawCapture(raw: RawCaptureEvent): DistillPrefilterDecision {
+  const hasAssistantSummary = Boolean(raw.assistant_summary?.trim());
+  const hasCandidates = raw.candidates.length > 0;
+  const hasSessionAnchor = Boolean(raw.session_id?.trim());
+  const hasEvidenceRefs = raw.evidence_refs.length > 0;
+
+  if (raw.source_kind === 'direct_input' && !hasAssistantSummary && !hasCandidates && !hasSessionAnchor) {
+    return { decision: 'reject', reason: hasEvidenceRefs ? 'low_signal' : 'missing_anchor' };
+  }
+
+  return { decision: 'candidate' };
+}
+
 function prepareEpisodePayload(episodes: ShortTermEpisode[]) {
   return episodes.map((episode, index) => ({
     id: episode.message_id ?? episode.object_ref ?? `episode-${index + 1}`,
@@ -1094,6 +1111,9 @@ async function handleDistill(agentId: string, limitRaw: string | undefined, root
     let scanned = 0;
     let distilledCount = 0;
     let skippedCount = 0;
+    let prefilterRejected = 0;
+    let rejectedLowSignal = 0;
+    let rejectedMissingAnchor = 0;
     let runtimeConfig: ModelProviderRuntime | null = null;
 
     try {
@@ -1114,6 +1134,18 @@ async function handleDistill(agentId: string, limitRaw: string | undefined, root
 
       for (const item of pending) {
         try {
+          const prefilter = prefilterRawCapture(item.value);
+          if (prefilter.decision === 'reject') {
+            skippedCount += 1;
+            prefilterRejected += 1;
+            if (prefilter.reason === 'low_signal') {
+              rejectedLowSignal += 1;
+            } else {
+              rejectedMissingAnchor += 1;
+            }
+            continue;
+          }
+
           const distilled = await distillRawCapture(item.value);
           if (distilled.quality.status === 'rejected') {
             skippedCount += 1;
@@ -1167,6 +1199,9 @@ async function handleDistill(agentId: string, limitRaw: string | undefined, root
         scanned,
         distilled: distilledCount,
         skipped: skippedCount,
+        prefilter_rejected: prefilterRejected,
+        rejected_low_signal: rejectedLowSignal,
+        rejected_missing_anchor: rejectedMissingAnchor,
         status,
         failure_reason: failureReason,
         skip_reason: skipReason,

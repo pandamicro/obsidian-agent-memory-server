@@ -3973,3 +3973,31 @@
   - hook flush producer 是否应强制始终带上 `event=...`，当前仍允许回退到 `hook-flush`
 - 下一步:
   - 进入 MVP3 Task 2，为 `reve distill` 增加 prefilter 与 rejection reason
+
+## R-0123 MVP3 Task 2 验证：reve distill prefilter
+
+- 日期: 2026-04-08
+- 目标: 在 `reve distill` 进入模型调用前，先过滤掉明确低质量的 `raw_capture`
+- 输入:
+  - `projects/reve/src/cli.ts`
+  - `projects/reve/test/reve.test.ts`
+  - `docs/plans/2026-04-08-reve-mvp3-episode-quality-implementation-plan.md`
+- 动作:
+  - 新增回归测试，验证普通 `direct_input` 在无 summary、无 candidate、无 session anchor 时会在 provider 前被拒绝
+  - 为 distill 新增最小 prefilter 逻辑
+  - 为 run summary 新增 `prefilter_rejected / rejected_low_signal / rejected_missing_anchor`
+  - 将既有“config.toml provider 解析”测试样本改为 `hook_flush`，避免被新 prefilter 规则误伤
+  - 运行 `npm --prefix projects/reve test`
+- 发现:
+  - 事实: 在本轮修改前，低信号 `direct_input` 会直接触发 provider 请求，并生成低价值 episode
+  - 事实: 新增 prefilter 后，这类 `direct_input` 会在 provider 调用前被拒绝，且不会写入 short-term
+  - 事实: 当前最小 prefilter 规则只拦截一类非常明确的低信号输入：`direct_input` 且同时缺少 `assistant_summary`、`candidates`、`session_id`
+  - 事实: `projects/reve` 全量测试通过，当前结果为 `19/19`
+- 决策:
+  - 接受 Task 2 的最小范围先只实现“明显低信号 direct_input 拒绝”
+  - 更复杂的“缺锚点但可 hydration”“hook_flush 是否进入 hydration 候选池”的判断留到后续任务
+- 未解问题:
+  - 当前 prefilter 还没有使用 `thread_id / turn_id / event` 等新锚点字段
+  - `rejected_missing_anchor` 目前尚未被真实样本覆盖
+- 下一步:
+  - 进入 MVP3 Task 3，为候选 `raw_capture` 增加 context hydration
