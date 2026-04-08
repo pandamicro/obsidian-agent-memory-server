@@ -3794,3 +3794,63 @@
   - MVP3 是否只做 episode 准入/归一化，还是同时引入轻量 pre-batch 分桶
 - 下一步:
   - 提出 2-3 条 MVP3 候选路径并与用户确认设计方向
+
+## R-0119 MVP3 路径评估：扩大 direct_input 上下文 vs distill 时回填 Codex 会话上下文
+
+- 日期: 2026-04-08
+- 目标: 比较两条提升 episode 质量的路径，判断哪条更值得作为 MVP3 主路径
+- 输入:
+  - `projects/cli/src/cli.ts`
+  - `projects/reve/src/cli.ts`
+  - `scripts/codex-hooks/contracts.ts`
+  - `scripts/codex-hooks/driver.ts`
+  - 本机 Codex 状态文件:
+    - `~/.codex/state_5.sqlite`
+    - `~/.codex/sqlite/codex-dev.db`
+    - `~/.codex/sessions/.../rollout-*.jsonl`
+- 动作:
+  - 检查当前 `direct_input` / `hook_flush` 的 raw_capture 写入边界
+  - 检查 hooks 是否已稳定持有 `session_id / turn_id / thread_id`
+  - 检查本机 Codex 本地存储是否能按 `session_id / run_id` 直接查询到消息正文
+  - 对比“capture 阶段扩 direct_input 上下文”与“distill 阶段按会话 id 回填上下文”两条路径的收益与代价
+- 发现:
+  - 事实: 当前 `direct_input` raw_capture 基本只保存原始输入文本，缺少会话邻域、assistant 输出、工具结果与 turn 锚点
+  - 事实: hooks runtime 已经能拿到 `session_id`，并且输入契约里也有 `thread_id / turn_id`
+  - 事实: `~/.codex/state_5.sqlite` 能按 thread/session 查询到索引信息与 `rollout_path`，但不提供完整 transcript 正文表
+  - 事实: 真正可用于会话回放和上下文提取的内容落在 `~/.codex/sessions/.../rollout-*.jsonl`
+  - 事实: 因此“通过 session 和 run id 直接到 codex 数据库查询”若按字面理解并不准确；更可行的实现是“通过 thread/session 索引定位 rollout_path，再解析 rollout JSONL 回填上下文”
+- 路径对比:
+  - 路径 A: 在 raw_capture 阶段扩大 `direct_input` 上下文
+    - 优势:
+      - 后端无关性更强
+      - raw_capture 自带更多证据，后续 distill 更简单
+      - 不依赖 Codex 内部存储结构
+    - 缺点:
+      - capture 时很难知道“哪些邻域上下文未来最有用”，容易无差别扩容
+      - 若仍在用户输入时点写入，则拿不到后续 assistant/tool outcome，提升上限有限
+      - 会把大量重复上下文固化进 raw_capture，增加噪音与存储冗余
+  - 路径 B: distill raw_capture 时，基于 `session_id / thread_id / turn_id` 回填 Codex 会话上下文
+    - 优势:
+      - 质量上限更高，能在 distill 时拿到更完整的 user/assistant/tool 邻域
+      - 更适合解决当前 direct_input “只有请求、没有结果”的核心问题
+      - raw_capture 可以继续保持轻量，只做指针与锚点
+      - 便于随着 distill 策略迭代重放同一批 raw_capture
+    - 缺点:
+      - 明显耦合 Codex 本地存储实现
+      - 需要处理 rollout 文件缺失、归档、格式变动与读取失败
+      - 需要在 raw_capture 中先补齐足够的 lookup 键，否则无法稳定定位上下文
+- 判断:
+  - 结论: 若目标是“更有效地提升 episode 产出质量”，路径 B 优于路径 A
+  - 原因: 当前瓶颈不是 raw_capture 文本长度不足，而是缺少与该输入同一会话内的 outcome / assistant / tool 邻域；这类信息更适合在 distill 时按会话回填，而不是在 capture 时盲目扩写
+- 假设:
+  - 假设: 最稳妥的 MVP3 主路径应是“B 为主，A 只做最小锚点增强”
+- 决策:
+  - 推荐的最小策略不是“全面扩大 direct_input 上下文”，而是：
+    - 在 raw_capture 增加最小 lookup 键：`thread_id / turn_id / event / rollout_path(可选) / workspace_root`
+    - 在 distill 阶段基于这些锚点去 Codex session rollout 回填上下文窗口
+- 未解问题:
+  - `turn_id` 与 rollout JSONL 中事件切片的稳定映射规则还需单独验证
+  - 是否需要把 `rollout_path` 直接固化进 raw_capture，还是运行时通过 `state_5.sqlite` 解析即可
+  - hooks 哪个事件最适合写入这些 lookup 键：`UserPromptSubmit`、`Stop`，还是二者配合
+- 下一步:
+  - 若进入 MVP3 设计，应围绕“raw_capture 最小锚点增强 + distill 时 rollout hydration”展开，而不是先做 direct_input 大文本扩容
