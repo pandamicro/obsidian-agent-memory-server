@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, readFile, readdir, rename, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rename, unlink, writeFile } from 'node:fs/promises';
+import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { spawn } from 'node:child_process';
@@ -60,6 +61,63 @@ async function runLauncher(args: string[], cwd: string, env: NodeJS.ProcessEnv =
   });
 }
 
+async function startResponsesTestServer(outputTexts: string[]) {
+  let requestIndex = 0;
+  const server = createServer((request, response) => {
+    if (request.method === 'POST' && request.url === '/v1/responses') {
+      const outputText = outputTexts[Math.min(requestIndex, outputTexts.length - 1)] ?? '';
+      requestIndex += 1;
+      response.writeHead(200, { 'Content-Type': 'application/json' });
+      response.end(JSON.stringify({ output_text: outputText }));
+      return;
+    }
+    response.writeHead(404);
+    response.end();
+  });
+
+  await new Promise<void>((resolvePromise) => {
+    server.listen(0, '127.0.0.1', () => resolvePromise());
+  });
+
+  const address = server.address();
+  assert(address && typeof address === 'object' && 'port' in address);
+
+  return {
+    baseUrl: `http://127.0.0.1:${address.port}`,
+    async close() {
+      await new Promise<void>((resolvePromise, rejectPromise) => {
+        server.close((error) => {
+          if (error) {
+            rejectPromise(error);
+            return;
+          }
+          resolvePromise();
+        });
+      });
+    },
+  };
+}
+
+async function writeConsolidateResponsesConfig(baseUrl: string) {
+  const configDir = await mkdtemp(join(tmpdir(), 'agent-reve-consolidate-config-'));
+  const configPath = join(configDir, 'config.toml');
+  await writeFile(
+    configPath,
+    [
+      'consolidate_model_provider = "responses-test"',
+      'consolidate_model = "responses-test-model"',
+      '',
+      '[model_providers.responses-test]',
+      `base_url = "${baseUrl}"`,
+      'wire_api = "responses"',
+      'requires_openai_auth = false',
+      '',
+    ].join('\n'),
+    'utf8',
+  );
+  return configPath;
+}
+
 test('distill converts pending raw-capture records into short-term memory via mock model', async () => {
   const workspaceRoot = await mkdtemp(join(tmpdir(), 'agent-reve-distill-'));
   const sharedRoot = await mkdtemp(join(tmpdir(), 'agent-reve-shared-'));
@@ -94,6 +152,29 @@ test('distill converts pending raw-capture records into short-term memory via mo
   assert.equal(shortTerm.filtered_by_model, true);
   assert.equal(shortTerm.identity_id, 'research-agent');
   assert.equal(shortTerm.source_message_id?.length > 0, true);
+
+  const runsDir = join(agentRoot, 'runs');
+  const runFiles = await readdir(runsDir);
+  let successSummary: null | Record<string, unknown> = null;
+  for (const file of runFiles) {
+    const summary = JSON.parse(await readFile(join(runsDir, file), 'utf8'));
+    if (
+      summary.distill_source === 'raw-capture'
+      && summary.status === 'success'
+      && summary.provider === 'mock'
+    ) {
+      successSummary = summary;
+      break;
+    }
+  }
+  assert(successSummary);
+  if (successSummary) {
+    assert.equal(successSummary.status, 'success');
+    assert.equal(successSummary.failure_reason, null);
+    assert.equal(successSummary.skip_reason, null);
+    assert.equal(successSummary.provider, 'mock');
+    assert.equal(typeof successSummary.model, 'string');
+  }
 });
 
 test('distill provider/model can be resolved from ~/.codex/config.toml', async () => {
@@ -216,7 +297,376 @@ test('consolidate builds a long-term learning record from short-term episodes', 
   assert.equal(runSummary.provider, 'mock');
   assert.equal(runSummary.model, 'gpt-5.2');
   assert.equal(runSummary.batches_scanned, 1);
+  assert.equal(runSummary.status, 'success');
+  assert.equal(runSummary.failure_reason, null);
+  assert.equal(runSummary.skip_reason, null);
   assert.equal(learning.consolidation_run_id, runSummary.run_id);
+});
+
+test('consolidate exits when consolidate lock already exists', async () => {
+  const workspaceRoot = await mkdtemp(join(tmpdir(), 'agent-reve-lock-consolidate-'));
+  const sharedRoot = await mkdtemp(join(tmpdir(), 'agent-reve-lock-consolidate-shared-'));
+  const sharedEnv = {
+    OBSIDIAN_AGENT_MEMORY_SERVER_SHARED_ROOT: sharedRoot,
+  };
+  const consolidateEnv = {
+    ...sharedEnv,
+    OBSIDIAN_AGENT_MEMORY_SERVER_CONSOLIDATE_PROVIDER: 'mock',
+    OBSIDIAN_AGENT_MEMORY_SERVER_CONSOLIDATE_MODEL: 'gpt-5.2',
+  };
+
+  assert.equal((await runLauncher(['init', '--agent-id', 'research-agent'], workspaceRoot, sharedEnv)).code, 0);
+  const agentRoot = join(sharedRoot, 'agents', 'research-agent');
+  const lockDir = join(agentRoot, 'runtime', 'locks');
+  await mkdir(lockDir, { recursive: true });
+  const lockPath = join(lockDir, 'consolidate.lock');
+  await writeFile(lockPath, 'locked', 'utf8');
+
+  const consolidateResult = await runReve(
+    ['consolidate', '--agent-id', 'research-agent', '--limit', '10', '--batch-size', '5'],
+    workspaceRoot,
+    consolidateEnv,
+  );
+  assert.equal(consolidateResult.code, 1);
+  assert.match(consolidateResult.stderr, /Command consolidate already running/i);
+
+  const longTermDir = join(agentRoot, 'memory', 'long-term');
+  const longTermFiles = await readdir(longTermDir);
+  assert.equal(longTermFiles.length, 0);
+  const runsDir = join(agentRoot, 'runs');
+  const runFiles = await readdir(runsDir);
+  assert.equal(runFiles.length, 0);
+  await unlink(lockPath);
+});
+
+test('distill and consolidate use separate lock files', async () => {
+  const workspaceRoot = await mkdtemp(join(tmpdir(), 'agent-reve-lock-separate-'));
+  const sharedRoot = await mkdtemp(join(tmpdir(), 'agent-reve-lock-separate-shared-'));
+  const sharedEnv = {
+    OBSIDIAN_AGENT_MEMORY_SERVER_SHARED_ROOT: sharedRoot,
+  };
+  const consolidateEnv = {
+    ...sharedEnv,
+    OBSIDIAN_AGENT_MEMORY_SERVER_CONSOLIDATE_PROVIDER: 'mock',
+    OBSIDIAN_AGENT_MEMORY_SERVER_CONSOLIDATE_MODEL: 'gpt-5.2',
+  };
+
+  assert.equal((await runLauncher(['init', '--agent-id', 'research-agent'], workspaceRoot, sharedEnv)).code, 0);
+  const agentRoot = join(sharedRoot, 'agents', 'research-agent');
+  const lockDir = join(agentRoot, 'runtime', 'locks');
+  await mkdir(lockDir, { recursive: true });
+  const distillLock = join(lockDir, 'distill.lock');
+  await writeFile(distillLock, 'locked', 'utf8');
+
+  const shortTermDir = join(agentRoot, 'memory', 'short-term');
+  await mkdir(shortTermDir, { recursive: true });
+  const episodeIds = ['lock-episode-1', 'lock-episode-2'];
+  for (const episodeId of episodeIds) {
+    const episode = {
+      schema_version: '1',
+      message_id: episodeId,
+      identity_id: 'research-agent',
+      object_kind: 'episode',
+      event_type: 'captured',
+      summary: `Episode ${episodeId}`,
+      evidence_refs: [`evidence-${episodeId}`],
+    };
+    await writeFile(join(shortTermDir, `${episodeId}.json`), `${JSON.stringify(episode, null, 2)}\n`, 'utf8');
+  }
+
+  const consolidateResult = await runReve(
+    ['consolidate', '--agent-id', 'research-agent', '--limit', '10', '--batch-size', '5'],
+    workspaceRoot,
+    consolidateEnv,
+  );
+  assert.equal(consolidateResult.code, 0);
+  assert.equal(await readFile(distillLock, 'utf8'), 'locked');
+  await unlink(distillLock);
+});
+
+test('consolidate leaves no learning file when validation fails', async () => {
+  const workspaceRoot = await mkdtemp(join(tmpdir(), 'agent-reve-consolidate-fail-'));
+  const sharedRoot = await mkdtemp(join(tmpdir(), 'agent-reve-consolidate-fail-shared-'));
+  const sharedEnv = {
+    OBSIDIAN_AGENT_MEMORY_SERVER_SHARED_ROOT: sharedRoot,
+  };
+  const server = await startResponsesTestServer([
+    JSON.stringify({
+      status: 'learning_created',
+      learning: {
+        message_id: 'invalid-learning',
+        identity_id: 'research-agent',
+        object_ref: 'learning:invalid-learning',
+        source_episode_ids: ['force-invalid-learning-1', 'force-invalid-learning-2'],
+        summary: 'invalid response',
+        applicability: 'invalid response',
+        failure_conditions: 'invalid response',
+        evidence_refs: [],
+        confidence: 0,
+      },
+    }),
+  ]);
+
+  try {
+    const configPath = await writeConsolidateResponsesConfig(server.baseUrl);
+
+    assert.equal((await runLauncher(['init', '--agent-id', 'research-agent'], workspaceRoot, sharedEnv)).code, 0);
+    const agentRoot = join(sharedRoot, 'agents', 'research-agent');
+    const shortTermDir = join(agentRoot, 'memory', 'short-term');
+    await mkdir(shortTermDir, { recursive: true });
+
+    const episodes = ['force-invalid-learning-1', 'force-invalid-learning-2'];
+    for (const episodeId of episodes) {
+      const episode = {
+        schema_version: '1',
+        message_id: episodeId,
+        identity_id: 'research-agent',
+        object_kind: 'episode',
+        event_type: 'captured',
+        summary: `Episode ${episodeId}`,
+        evidence_refs: [`evidence-${episodeId}`],
+      };
+      await writeFile(join(shortTermDir, `${episodeId}.json`), `${JSON.stringify(episode, null, 2)}\n`, 'utf8');
+    }
+
+    const consolidateResult = await runReve(
+      ['consolidate', '--agent-id', 'research-agent', '--limit', '10', '--batch-size', '5'],
+      workspaceRoot,
+      {
+        ...sharedEnv,
+        OBSIDIAN_AGENT_MEMORY_SERVER_CODEX_CONFIG_PATH: configPath,
+      },
+    );
+    assert.equal(consolidateResult.code, 1);
+    assert.match(consolidateResult.stderr, /quality/i);
+
+    const longTermDir = join(agentRoot, 'memory', 'long-term');
+    const longTermFiles = await readdir(longTermDir);
+    assert.equal(longTermFiles.length, 0);
+
+    const runsDir = join(agentRoot, 'runs');
+    const runFiles = await readdir(runsDir);
+    assert.equal(runFiles.length, 1);
+    const runSummary = JSON.parse(await readFile(join(runsDir, runFiles[0]!), 'utf8'));
+    assert.equal(runSummary.status, 'failed');
+    assert.equal(runSummary.skip_reason, null);
+    assert.ok(runSummary.failure_reason?.includes('quality'));
+    assert.equal(runSummary.learning_created, 0);
+  } finally {
+    await server.close();
+  }
+});
+
+test('consolidate leaves no learning file when responses output is invalid JSON', async () => {
+  const workspaceRoot = await mkdtemp(join(tmpdir(), 'agent-reve-consolidate-parse-fail-'));
+  const sharedRoot = await mkdtemp(join(tmpdir(), 'agent-reve-consolidate-parse-fail-shared-'));
+  const sharedEnv = {
+    OBSIDIAN_AGENT_MEMORY_SERVER_SHARED_ROOT: sharedRoot,
+  };
+
+  const server = await startResponsesTestServer(['{not-json']);
+
+  try {
+    const configPath = await writeConsolidateResponsesConfig(server.baseUrl);
+
+    assert.equal((await runLauncher(['init', '--agent-id', 'research-agent'], workspaceRoot, sharedEnv)).code, 0);
+    const agentRoot = join(sharedRoot, 'agents', 'research-agent');
+    const shortTermDir = join(agentRoot, 'memory', 'short-term');
+    await mkdir(shortTermDir, { recursive: true });
+
+    const episodes = ['parse-fail-1', 'parse-fail-2'];
+    for (const episodeId of episodes) {
+      const episode = {
+        schema_version: '1',
+        message_id: episodeId,
+        identity_id: 'research-agent',
+        object_kind: 'episode',
+        event_type: 'captured',
+        summary: `Episode ${episodeId}`,
+        evidence_refs: [`evidence-${episodeId}`],
+      };
+      await writeFile(join(shortTermDir, `${episodeId}.json`), `${JSON.stringify(episode, null, 2)}\n`, 'utf8');
+    }
+
+    const consolidateResult = await runReve(
+      ['consolidate', '--agent-id', 'research-agent', '--limit', '10', '--batch-size', '5'],
+      workspaceRoot,
+      {
+        ...sharedEnv,
+        OBSIDIAN_AGENT_MEMORY_SERVER_CODEX_CONFIG_PATH: configPath,
+      },
+    );
+    assert.equal(consolidateResult.code, 1);
+    assert.match(consolidateResult.stderr, /Unexpected token|Expected property name|JSON/i);
+
+    const longTermDir = join(agentRoot, 'memory', 'long-term');
+    const longTermFiles = await readdir(longTermDir);
+    assert.equal(longTermFiles.length, 0);
+
+    const runsDir = join(agentRoot, 'runs');
+    const runFiles = await readdir(runsDir);
+    assert.equal(runFiles.length, 1);
+    const runSummary = JSON.parse(await readFile(join(runsDir, runFiles[0]!), 'utf8'));
+    assert.equal(runSummary.status, 'failed');
+    assert.equal(runSummary.skip_reason, null);
+    assert.ok(runSummary.failure_reason?.match(/Unexpected token|Expected property name|JSON/i));
+    assert.equal(runSummary.learning_created, 0);
+  } finally {
+    await server.close();
+  }
+});
+
+test('consolidate rolls back earlier staged learnings if a later batch fails', async () => {
+  const workspaceRoot = await mkdtemp(join(tmpdir(), 'agent-reve-consolidate-staged-fail-'));
+  const sharedRoot = await mkdtemp(join(tmpdir(), 'agent-reve-consolidate-staged-fail-shared-'));
+  const sharedEnv = {
+    OBSIDIAN_AGENT_MEMORY_SERVER_SHARED_ROOT: sharedRoot,
+  };
+  const server = await startResponsesTestServer([
+    JSON.stringify({
+      status: 'learning_created',
+      learning: {
+        message_id: 'stage-learning-ok',
+        identity_id: 'research-agent',
+        object_ref: 'learning:stage-learning-ok',
+        source_episode_ids: ['stage-ok-1', 'stage-ok-2'],
+        summary: 'valid learning',
+        applicability: 'valid learning',
+        failure_conditions: 'valid learning',
+        evidence_refs: ['evidence-stage-ok-1', 'evidence-stage-ok-2'],
+        confidence: 0.8,
+        quality: {
+          observable: true,
+          linkable: true,
+          evaluatable: true,
+          distillable: true,
+          status: 'pass',
+          reasons: [],
+        },
+      },
+    }),
+    '{not-json',
+  ]);
+
+  try {
+    const configPath = await writeConsolidateResponsesConfig(server.baseUrl);
+
+    assert.equal((await runLauncher(['init', '--agent-id', 'research-agent'], workspaceRoot, sharedEnv)).code, 0);
+    const agentRoot = join(sharedRoot, 'agents', 'research-agent');
+    const shortTermDir = join(agentRoot, 'memory', 'short-term');
+    await mkdir(shortTermDir, { recursive: true });
+
+    const episodes = [
+      {
+        id: 'stage-ok-1',
+        summary: 'valid batch one a',
+        evidence_refs: ['evidence-stage-ok-1'],
+      },
+      {
+        id: 'stage-ok-2',
+        summary: 'valid batch one b',
+        evidence_refs: ['evidence-stage-ok-2'],
+      },
+      {
+        id: 'stage-bad-1',
+        summary: 'invalid batch two a',
+        evidence_refs: ['evidence-stage-bad-1'],
+      },
+      {
+        id: 'stage-bad-2',
+        summary: 'invalid batch two b',
+        evidence_refs: ['evidence-stage-bad-2'],
+      },
+    ];
+
+    for (const episode of episodes) {
+      const entry = {
+        schema_version: '1',
+        message_id: episode.id,
+        identity_id: 'research-agent',
+        object_kind: 'episode',
+        event_type: 'captured',
+        summary: episode.summary,
+        evidence_refs: episode.evidence_refs,
+      };
+      await writeFile(join(shortTermDir, `${episode.id}.json`), `${JSON.stringify(entry, null, 2)}\n`, 'utf8');
+    }
+
+    const consolidateResult = await runReve(
+      ['consolidate', '--agent-id', 'research-agent', '--limit', '10', '--batch-size', '2'],
+      workspaceRoot,
+      {
+        ...sharedEnv,
+        OBSIDIAN_AGENT_MEMORY_SERVER_CODEX_CONFIG_PATH: configPath,
+      },
+    );
+    assert.equal(consolidateResult.code, 1);
+    assert.match(consolidateResult.stderr, /Unexpected token|Expected property name|JSON/i);
+
+    const longTermDir = join(agentRoot, 'memory', 'long-term');
+    const longTermFiles = await readdir(longTermDir);
+    assert.equal(longTermFiles.length, 0);
+
+    const runsDir = join(agentRoot, 'runs');
+    const runFiles = await readdir(runsDir);
+    assert.equal(runFiles.length, 1);
+    const runSummary = JSON.parse(await readFile(join(runsDir, runFiles[0]!), 'utf8'));
+    assert.equal(runSummary.status, 'failed');
+    assert.equal(runSummary.learning_created, 0);
+    assert.equal(runSummary.failure_reason?.match(/Unexpected token|Expected property name|JSON/i) !== null, true);
+  } finally {
+    await server.close();
+  }
+});
+
+test('distill run summaries record skip reasons when no pending raw capture', async () => {
+  const workspaceRoot = await mkdtemp(join(tmpdir(), 'agent-reve-distill-skip-'));
+  const sharedRoot = await mkdtemp(join(tmpdir(), 'agent-reve-distill-skip-shared-'));
+  const sharedEnv = {
+    OBSIDIAN_AGENT_MEMORY_SERVER_SHARED_ROOT: sharedRoot,
+  };
+
+  assert.equal((await runLauncher(['init', '--agent-id', 'research-agent'], workspaceRoot, sharedEnv)).code, 0);
+  await runLauncher(
+    ['run', '--agent-id', 'research-agent', '--input', '[hook flush] session=s-skip\nassistant=done'],
+    workspaceRoot,
+    sharedEnv,
+  );
+  assert.equal(
+    (
+      await runReve(
+        ['distill', '--agent-id', 'research-agent', '--limit', '5'],
+        workspaceRoot,
+        { ...sharedEnv, OBSIDIAN_AGENT_MEMORY_SERVER_DISTILL_PROVIDER: 'mock' },
+      )
+    ).code,
+    0,
+  );
+
+  const secondDistill = await runReve(
+    ['distill', '--agent-id', 'research-agent', '--limit', '5'],
+    workspaceRoot,
+    { ...sharedEnv, OBSIDIAN_AGENT_MEMORY_SERVER_DISTILL_PROVIDER: 'mock' },
+  );
+  assert.equal(secondDistill.code, 0);
+
+  const agentRoot = join(sharedRoot, 'agents', 'research-agent');
+  const runsDir = join(agentRoot, 'runs');
+  const runFiles = await readdir(runsDir);
+  let skippedSummary: null | Record<string, unknown> = null;
+  for (const file of runFiles) {
+    const summary = JSON.parse(await readFile(join(runsDir, file), 'utf8'));
+    if (summary.status === 'skipped') {
+      skippedSummary = summary;
+      break;
+    }
+  }
+  assert(skippedSummary);
+  if (skippedSummary) {
+    assert.equal(skippedSummary.status, 'skipped');
+    assert.equal(skippedSummary.skip_reason, 'no_pending_raw_captures');
+    assert.equal(skippedSummary.failure_reason, null);
+  }
 });
 
 test('distill rejects non-integer limit values', async () => {

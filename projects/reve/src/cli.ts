@@ -1,4 +1,4 @@
-import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, readFile, unlink, writeFile } from 'node:fs/promises';
 import { readFileSync, realpathSync } from 'node:fs';
 import { randomUUID, createHash } from 'node:crypto';
 import { homedir } from 'node:os';
@@ -135,6 +135,63 @@ const QUALITY_STATUSES: ReadonlySet<DistilledShortTerm['quality']['status']> = n
   'needs_review',
   'rejected',
 ]);
+
+type RunStatus = 'success' | 'failed' | 'skipped';
+type CommandName = 'distill' | 'consolidate';
+
+function sanitizeForFilename(value: string) {
+  return value.replaceAll(':', '-');
+}
+
+async function ensureRuntimeLockDir(agentRoot: string): Promise<string> {
+  const locksDir = join(agentRoot, 'runtime', 'locks');
+  await mkdir(locksDir, { recursive: true });
+  return locksDir;
+}
+
+function getCommandLockPath(agentRoot: string, command: CommandName): string {
+  return join(agentRoot, 'runtime', 'locks', `${command}.lock`);
+}
+
+async function acquireCommandLock(agentRoot: string, command: CommandName): Promise<string> {
+  const locksDir = await ensureRuntimeLockDir(agentRoot);
+  const lockPath = join(locksDir, `${command}.lock`);
+  try {
+    await writeFile(lockPath, '', { flag: 'wx' });
+    return lockPath;
+  } catch (error) {
+    const typed = error as NodeJS.ErrnoException;
+    if (typed.code === 'EEXIST') {
+      throw new Error(`Command ${command} already running (lock exists: ${lockPath})`);
+    }
+    throw error;
+  }
+}
+
+async function releaseCommandLock(lockPath: string) {
+  try {
+    await unlink(lockPath);
+  } catch (error) {
+    const typed = error as NodeJS.ErrnoException;
+    if (typed.code === 'ENOENT') {
+      return;
+    }
+    throw error;
+  }
+}
+
+async function withCommandLock<T>(
+  agentRoot: string,
+  command: CommandName,
+  callback: () => Promise<T>,
+): Promise<T> {
+  const lockPath = await acquireCommandLock(agentRoot, command);
+  try {
+    return await callback();
+  } finally {
+    await releaseCommandLock(lockPath);
+  }
+}
 
 function resolveStorageRoot() {
   return (
@@ -1003,73 +1060,107 @@ async function handleDistill(agentId: string, limitRaw: string | undefined, root
   await mkdir(rawCaptureDir, { recursive: true });
   await mkdir(shortTermDir, { recursive: true });
   await mkdir(runsDir, { recursive: true });
+  const runResult = await withCommandLock(agentRoot, 'distill', async () => {
+    const runId = randomUUID();
+    const runObservedAt = createTimestamp();
+    const runSummaryPath = join(runsDir, `${sanitizeForFilename(runObservedAt)}-${runId}.json`);
+    let status: RunStatus = 'success';
+    let failureReason: string | null = null;
+    let skipReason: string | null = null;
+    let scanned = 0;
+    let distilledCount = 0;
+    let skippedCount = 0;
+    let runtimeConfig: ModelProviderRuntime | null = null;
 
-  const maxItems = parsePositiveInteger('limit', limitRaw, 20);
-
-  const allRaw = await readRawCaptureEvents(rawCaptureDir);
-  const processedSourceIds = await readShortTermSourceIds(shortTermDir);
-  const pending = allRaw.filter((event) => !processedSourceIds.has(event.value.message_id)).slice(0, maxItems);
-  const runtimeConfig = readDistillRuntimeConfig();
-
-  let distilledCount = 0;
-  let skippedCount = 0;
-  for (const item of pending) {
     try {
-      const distilled = await distillRawCapture(item.value);
-      if (distilled.quality.status === 'rejected') {
-        skippedCount += 1;
-        continue;
+      const currentRuntime = readDistillRuntimeConfig();
+      runtimeConfig = currentRuntime;
+      const maxItems = parsePositiveInteger('limit', limitRaw, 20);
+      const allRaw = await readRawCaptureEvents(rawCaptureDir);
+      const processedSourceIds = await readShortTermSourceIds(shortTermDir);
+      const pending = allRaw
+        .filter((event) => !processedSourceIds.has(event.value.message_id))
+        .slice(0, maxItems);
+      scanned = pending.length;
+      if (scanned === 0) {
+        status = 'skipped';
+        skipReason = 'no_pending_raw_captures';
+        return { status, distilledCount, skippedCount };
       }
 
-      const observedAt = createTimestamp();
-      const shortTermId = randomUUID();
-      const shortTermObject = {
-        schema_version: '1',
-        message_id: shortTermId,
-        source_message_id: item.value.message_id,
-        identity_id: identity.agent_id,
-        filtered_by_model: true,
-        model_provider: runtimeConfig.provider,
-        model_name: runtimeConfig.model,
-        object_kind: distilled.object_kind,
-        object_ref: `episode:${shortTermId}`,
-        event_type: distilled.event_type,
-        signal_type: distilled.signal_type,
-        polarity: distilled.polarity,
-        summary: distilled.summary,
-        evidence_refs: distilled.evidence_refs,
-        confidence: Math.max(0, Math.min(1, distilled.confidence)),
-        parser_reason: distilled.parser_reason,
-        quality: distilled.quality,
-        raw_capture_ref: item.path,
-        observed_at: observedAt,
+      for (const item of pending) {
+        try {
+          const distilled = await distillRawCapture(item.value);
+          if (distilled.quality.status === 'rejected') {
+            skippedCount += 1;
+            continue;
+          }
+
+          const observedAt = createTimestamp();
+          const shortTermId = randomUUID();
+          const shortTermObject = {
+            schema_version: '1',
+            message_id: shortTermId,
+            source_message_id: item.value.message_id,
+            identity_id: identity.agent_id,
+            filtered_by_model: true,
+            model_provider: currentRuntime.provider,
+            model_name: currentRuntime.model,
+            object_kind: distilled.object_kind,
+            object_ref: `episode:${shortTermId}`,
+            event_type: distilled.event_type,
+            signal_type: distilled.signal_type,
+            polarity: distilled.polarity,
+            summary: distilled.summary,
+            evidence_refs: distilled.evidence_refs,
+            confidence: Math.max(0, Math.min(1, distilled.confidence)),
+            parser_reason: distilled.parser_reason,
+            quality: distilled.quality,
+            raw_capture_ref: item.path,
+            observed_at: observedAt,
+          };
+
+          const shortTermPath = join(shortTermDir, `${observedAt.replaceAll(':', '-')}-${shortTermId}.json`);
+          await writeJsonFile(shortTermPath, shortTermObject);
+          distilledCount += 1;
+        } catch {
+          skippedCount += 1;
+        }
+      }
+
+      return { status, distilledCount, skippedCount };
+    } catch (error) {
+      status = 'failed';
+      failureReason = error instanceof Error ? error.message : String(error);
+      throw error;
+    } finally {
+      const summaryProvider = runtimeConfig?.provider ?? 'unknown';
+      const summaryModel = runtimeConfig?.model ?? 'unknown';
+      const runSummary = {
+        run_id: runId,
+        agent_id: identity.agent_id,
+        distill_source: 'raw-capture',
+        scanned,
+        distilled: distilledCount,
+        skipped: skippedCount,
+        status,
+        failure_reason: failureReason,
+        skip_reason: skipReason,
+        provider: summaryProvider,
+        model: summaryModel,
+        observed_at: runObservedAt,
       };
-
-      const shortTermPath = join(shortTermDir, `${observedAt.replaceAll(':', '-')}-${shortTermId}.json`);
-      await writeJsonFile(shortTermPath, shortTermObject);
-      distilledCount += 1;
-    } catch {
-      skippedCount += 1;
+      await writeJsonFile(runSummaryPath, runSummary);
     }
-  }
-
-  const runId = randomUUID();
-  const observedAt = createTimestamp();
-  const runSummary = {
-    run_id: runId,
-    agent_id: identity.agent_id,
-    distill_source: 'raw-capture',
-    scanned: pending.length,
-    distilled: distilledCount,
-    skipped: skippedCount,
-    observed_at: observedAt,
-  };
-  const runSummaryPath = join(runsDir, `${observedAt.replaceAll(':', '-')}-${runId}.json`);
-  await writeJsonFile(runSummaryPath, runSummary);
+  });
 
   console.log(`Agent: ${identity.agent_id}`);
-  console.log(`Distilled short-term records: ${distilledCount}`);
-  console.log(`Skipped raw captures: ${skippedCount}`);
+  if (runResult.status === 'success') {
+    console.log(`Distilled short-term records: ${runResult.distilledCount}`);
+    console.log(`Skipped raw captures: ${runResult.skippedCount}`);
+  } else if (runResult.status === 'skipped') {
+    console.log('No pending raw captures to distill; skipping.');
+  }
 }
 
 async function handleConsolidate(agentId: string, limitRaw: string | undefined, batchSizeRaw: string | undefined, rootDir: string) {
@@ -1083,111 +1174,162 @@ async function handleConsolidate(agentId: string, limitRaw: string | undefined, 
   await mkdir(longTermDir, { recursive: true });
   await mkdir(runsDir, { recursive: true });
 
-  const limit = parsePositiveInteger('limit', limitRaw, 20);
-  const batchSize = parsePositiveInteger('batch-size', batchSizeRaw, 10);
-  const runtime = readConsolidationRuntimeConfig();
+  const runResult = await withCommandLock(agentRoot, 'consolidate', async () => {
+    const runId = randomUUID();
+    const runObservedAt = createTimestamp();
+    const runSummaryPath = join(runsDir, `${sanitizeForFilename(runObservedAt)}-${runId}.json`);
+    let status: RunStatus = 'success';
+    let failureReason: string | null = null;
+    let skipReason: string | null = null;
+    let episodesScanned = 0;
+    let batchesScanned = 0;
+    let learningRecords = 0;
+    let limitValue = 0;
+    let batchSizeValue = 0;
+    let runtime: ModelProviderRuntime | null = null;
+    const statusCounts: Record<ConsolidationStatus, number> = {
+      learning_created: 0,
+      no_learning: 0,
+      needs_more_evidence: 0,
+    };
+    const stagedLearningWrites: Array<{ path: string; record: Learning }> = [];
 
-  const existingFingerprints = await readExistingLearningFingerprints(longTermDir, identity.agent_id);
+    try {
+      const currentRuntime = readConsolidationRuntimeConfig();
+      runtime = currentRuntime;
+      limitValue = parsePositiveInteger('limit', limitRaw, 20);
+      batchSizeValue = parsePositiveInteger('batch-size', batchSizeRaw, 10);
+      const existingFingerprints = await readExistingLearningFingerprints(longTermDir, identity.agent_id);
+      const episodes = await readShortTermEpisodes(shortTermDir);
+      const validEpisodes = episodes.filter((item) => {
+        const value = item.value;
+        if (value.object_kind !== 'episode') {
+          return false;
+        }
+        if (value.identity_id !== agentId) {
+          return false;
+        }
+        if (!value.message_id && !value.object_ref) {
+          return false;
+        }
+        return true;
+      });
+      const selected = validEpisodes.slice(0, limitValue);
+      episodesScanned = selected.length;
 
-  const episodes = await readShortTermEpisodes(shortTermDir);
-  const validEpisodes = episodes.filter((item) => {
-    const value = item.value;
-    if (value.object_kind !== 'episode') {
-      return false;
-    }
-    if (value.identity_id !== agentId) {
-      return false;
-    }
-    if (!value.message_id && !value.object_ref) {
-      return false;
-    }
-    return true;
-  });
-  const selected = validEpisodes.slice(0, limit);
-
-  const batches: Array<Array<{ path: string; value: ShortTermEpisode }>> = [];
-  for (let index = 0; index < selected.length; index += batchSize) {
-    batches.push(selected.slice(index, index + batchSize));
-  }
-
-  const runId = randomUUID();
-  const runObservedAt = createTimestamp();
-  const statusCounts: Record<ConsolidationStatus, number> = {
-    learning_created: 0,
-    no_learning: 0,
-    needs_more_evidence: 0,
-  };
-  let learningRecords = 0;
-
-  for (const batch of batches) {
-    const episodeBatch = batch.map((item) => item.value);
-    if (episodeBatch.length === 0) {
-      continue;
-    }
-    const response = validateConsolidationModelResponse(
-      await consolidateBatch(episodeBatch, runtime, identity.agent_id),
-    );
-    if (response.status === 'learning_created') {
-      const normalizedSourceIds = normalizeSourceEpisodeIds(response.learning.source_episode_ids);
-      if (normalizedSourceIds.length === 0) {
-        throw new Error('Consolidation learning_created response must include at least one source episode id');
+      if (episodesScanned === 0) {
+        status = 'skipped';
+        skipReason = 'no_valid_episodes';
+        return {
+          status,
+          learningRecords,
+          episodesScanned,
+          batchesScanned,
+          statusCounts: { ...statusCounts },
+        };
       }
-      const fingerprint = computeLearningFingerprintFromIds(normalizedSourceIds);
-      if (existingFingerprints.has(fingerprint)) {
-        continue;
+
+      const batches: Array<Array<{ path: string; value: ShortTermEpisode }>> = [];
+      for (let index = 0; index < selected.length; index += batchSizeValue) {
+        batches.push(selected.slice(index, index + batchSizeValue));
       }
-      existingFingerprints.add(fingerprint);
-      statusCounts.learning_created += 1;
-      const learningObservedAt = createTimestamp();
-      const learningStorageId = randomUUID();
-      const learningRecord: Learning = {
-        schema_version: '1',
-        message_id: response.learning.message_id,
-        identity_id: identity.agent_id,
-        object_kind: 'learning',
-        object_ref: response.learning.object_ref,
-        source_episode_ids: normalizedSourceIds,
-        summary: response.learning.summary,
-        applicability: response.learning.applicability,
-        failure_conditions: response.learning.failure_conditions,
-        evidence_refs: response.learning.evidence_refs,
-        confidence: Math.max(0, Math.min(1, response.learning.confidence)),
-        quality: response.learning.quality,
-        observed_at: learningObservedAt,
-        consolidation_run_id: runId,
-        fingerprint,
+      batchesScanned = batches.length;
+
+      for (const batch of batches) {
+        const episodeBatch = batch.map((item) => item.value);
+        if (episodeBatch.length === 0) {
+          continue;
+        }
+        const response = validateConsolidationModelResponse(
+          await consolidateBatch(episodeBatch, currentRuntime, identity.agent_id),
+        );
+        if (response.status === 'learning_created') {
+          const normalizedSourceIds = normalizeSourceEpisodeIds(response.learning.source_episode_ids);
+          if (normalizedSourceIds.length === 0) {
+            throw new Error('Consolidation learning_created response must include at least one source episode id');
+          }
+          const fingerprint = computeLearningFingerprintFromIds(normalizedSourceIds);
+          if (existingFingerprints.has(fingerprint)) {
+            continue;
+          }
+          existingFingerprints.add(fingerprint);
+          const learningObservedAt = createTimestamp();
+          const learningStorageId = randomUUID();
+          const learningRecord: Learning = {
+            schema_version: '1',
+            message_id: response.learning.message_id,
+            identity_id: identity.agent_id,
+            object_kind: 'learning',
+            object_ref: response.learning.object_ref,
+            source_episode_ids: normalizedSourceIds,
+            summary: response.learning.summary,
+            applicability: response.learning.applicability,
+            failure_conditions: response.learning.failure_conditions,
+            evidence_refs: response.learning.evidence_refs,
+            confidence: Math.max(0, Math.min(1, response.learning.confidence)),
+            quality: response.learning.quality,
+            observed_at: learningObservedAt,
+            consolidation_run_id: runId,
+            fingerprint,
+          };
+          const learningPath = join(longTermDir, `${learningObservedAt.replaceAll(':', '-')}-${learningStorageId}.json`);
+          stagedLearningWrites.push({ path: learningPath, record: learningRecord });
+          continue;
+        }
+        statusCounts[response.status] += 1;
+      }
+
+      for (const stagedWrite of stagedLearningWrites) {
+        await writeJsonFile(stagedWrite.path, stagedWrite.record);
+        learningRecords += 1;
+      }
+      statusCounts.learning_created = learningRecords;
+
+      return {
+        status,
+        learningRecords,
+        episodesScanned,
+        batchesScanned,
+        statusCounts: { ...statusCounts },
       };
-      const learningPath = join(longTermDir, `${learningObservedAt.replaceAll(':', '-')}-${learningStorageId}.json`);
-      await writeJsonFile(learningPath, learningRecord);
-      learningRecords += 1;
-      continue;
+    } catch (error) {
+      status = 'failed';
+      failureReason = error instanceof Error ? error.message : String(error);
+      throw error;
+    } finally {
+      const summaryProvider = runtime?.provider ?? 'unknown';
+      const summaryModel = runtime?.model ?? 'unknown';
+      const runSummary = {
+        run_id: runId,
+        agent_id: identity.agent_id,
+        consolidate_source: 'short-term',
+        episodes_scanned: episodesScanned,
+        limit: limitValue,
+        batch_size: batchSizeValue,
+        batches_scanned: batchesScanned,
+        learning_created: statusCounts.learning_created,
+        no_learning: statusCounts.no_learning,
+        needs_more_evidence: statusCounts.needs_more_evidence,
+        provider: summaryProvider,
+        model: summaryModel,
+        status,
+        failure_reason: failureReason,
+        skip_reason: skipReason,
+        observed_at: runObservedAt,
+      };
+      await writeJsonFile(runSummaryPath, runSummary);
     }
-    statusCounts[response.status] += 1;
+  });
+
+  if (runResult.status === 'success') {
+    console.log(`Learning records: ${runResult.learningRecords}`);
+    console.log(`No-learning batches: ${runResult.statusCounts.no_learning}`);
+    console.log(`Needs more evidence: ${runResult.statusCounts.needs_more_evidence}`);
+    console.log(`Episodes consolidated: ${runResult.episodesScanned}`);
+    console.log(`Batches processed: ${runResult.batchesScanned}`);
+  } else if (runResult.status === 'skipped') {
+    console.log('No valid episodes to consolidate; skipping.');
   }
-
-  const runSummary = {
-    run_id: runId,
-    agent_id: identity.agent_id,
-    consolidate_source: 'short-term',
-    episodes_scanned: selected.length,
-    limit,
-    batch_size: batchSize,
-    batches_scanned: batches.length,
-    learning_created: statusCounts.learning_created,
-    no_learning: statusCounts.no_learning,
-    needs_more_evidence: statusCounts.needs_more_evidence,
-    provider: runtime.provider,
-    model: runtime.model,
-    observed_at: runObservedAt,
-  };
-  const runSummaryPath = join(runsDir, `${runObservedAt.replaceAll(':', '-')}-${runId}.json`);
-  await writeJsonFile(runSummaryPath, runSummary);
-
-  console.log(`Learning records: ${learningRecords}`);
-  console.log(`No-learning batches: ${statusCounts.no_learning}`);
-  console.log(`Needs more evidence: ${statusCounts.needs_more_evidence}`);
-  console.log(`Episodes consolidated: ${selected.length}`);
-  console.log(`Batches processed: ${batches.length}`);
 }
 
 async function main() {
