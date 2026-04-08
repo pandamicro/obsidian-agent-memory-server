@@ -3899,3 +3899,48 @@
 - 下一步:
   - 输出 MVP3 设计文档
   - 进入 MVP3 implementation plan 拆解
+
+## R-0121 MVP3 implementation plan 拆解
+
+- 日期: 2026-04-08
+- 目标: 将 MVP3 设计拆成可逐步执行、可测试、可提交的实现计划
+- 输入:
+  - `docs/plans/2026-04-08-reve-mvp3-episode-quality-design.md`
+  - 当前代码入口:
+    - `projects/cli/src/cli.ts`
+    - `projects/cli/test/cli.test.ts`
+    - `scripts/codex-hooks/contracts.ts`
+    - `scripts/codex-hooks/driver.ts`
+    - `projects/reve/src/cli.ts`
+    - `projects/reve/test/reve.test.ts`
+  - `projects/reve/package.json`
+  - `projects/cli/package.json`
+- 动作:
+  - 核对 MVP3 将涉及的采集、hook、distill 与测试文件
+  - 按“单任务 2-5 分钟、先测后改、频繁提交”的原则拆解实现路径
+  - 输出 MVP3 implementation plan 文档
+- 发现:
+  - 事实: `projects/cli` 已有独立测试入口，适合先为 raw_capture 锚点补测试
+  - 事实: `projects/reve` 当前 `distill`、`consolidate`、`drive` 逻辑集中在 `src/cli.ts`，MVP3 初期仍可在单文件内增量迭代
+  - 事实: `projects/reve/test/reve.test.ts` 已有 provider request body 捕获能力，适合继续为 distill prompt / schema / hydration 增加回归测试
+  - 事实: 当前最自然的实现顺序是：
+    - 先补 raw_capture lookup anchors
+    - 再加 prefilter
+    - 再加 hydrator
+    - 最后收紧 distill prompt 与 run summary
+- 决策:
+  - implementation plan 采用 6 个任务:
+    - anchor fields
+    - prefilter
+    - hydrator
+    - conservative prompt/schema
+    - summary/docs
+    - real-provider validation
+  - 每个任务都要求测试、验证命令与独立 commit
+- 假设:
+  - 假设: 继续在 `projects/reve/src/cli.ts` 中增量实现，不会立刻造成不可维护的复杂度爆炸
+- 未解问题:
+  - hydrator 是否应在 MVP3 初期就拆出独立模块文件，还是先保留在 `cli.ts`
+- 下一步:
+  - 将 implementation plan 作为执行基线
+  - 若用户选择继续实现，则按任务顺序逐步落地
