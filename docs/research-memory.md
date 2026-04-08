@@ -4258,3 +4258,36 @@
   - 保留唯一未命中删除条件的 `research-agent` 记录，避免误删现阶段仍可用于后续蒸馏验证的样本
 - 下一步:
   - 后续应优先提升采集结构化质量，再重新积累新的 `raw_capture`
+
+## R-0132 raw_capture 收集链路检查
+
+- 日期: 2026-04-08
+- 目标: 判断当前 `raw_capture` 收集逻辑是否漏掉关键数据，或存在“理论可得但实际收集不到”的路径缺口
+- 输入:
+  - `projects/cli/src/cli.ts`
+  - `scripts/codex-hooks/contracts.ts`
+  - `scripts/codex-hooks/driver.ts`
+  - `scripts/codex-hooks/state.ts`
+  - `scripts/migrate-legacy-short-term-to-raw-capture.mjs`
+- 动作:
+  - 检查 `projects/cli run` 的 hook flush 解析与落盘逻辑
+  - 检查 `codex-hooks` driver 的 session/tool/stop 事件采集与 flush 逻辑
+  - 对比历史低质量 `raw_capture` 与迁移脚本的生成方式
+- 发现:
+  - 事实: `projects/cli run` 只要收到首行严格以 `[hook flush]` 开头的输入，就能结构化提取 `session_id / thread_id / turn_id / event / workspace_root / assistant_summary / candidates`
+  - 事实: `scripts/codex-hooks/contracts.ts` 会保留 hook 输入中的 `thread_id / turn_id`，合同层没有丢字段
+  - 事实: `scripts/codex-hooks/driver.ts` 当前会在 `PreToolUse / PostToolUse / Stop` 中把 command、tool response、assistant summary 等信息写入 `pending_feedback`
+  - 事实: 但当前 driver 内没有任何一步把 `pending_feedback` 真正 flush 成 `agents run --input \"[hook flush]...\"` 或直接写成 `raw_capture`
+  - 事实: `Stop` 事件中刚把 assistant summary 加入 `pending_feedback`，下一行就执行 `state.pending_feedback = []`，导致已收集的 feedback 被清空
+  - 事实: 当前 hooks 的 stop-trigger 只会可选调用 `bin/reve distill`，不会先生成新的 `raw_capture`
+  - 事实: 历史上一批“`input` 文本里看起来像 `[hook flush]`，但 `source_kind=direct_input`”的坏数据，很大概率来自 `scripts/migrate-legacy-short-term-to-raw-capture.mjs`，因为该脚本会无条件生成 `source_kind=direct_input`、`session_id=null`、`assistant_summary=null`、`candidates=[]`
+- 决策:
+  - 将当前问题拆成两类:
+    - 实时采集链路缺口: hooks 已采到 session/tool/assistant 信息，但没有 flush 到 `raw_capture`
+    - 历史数据污染: 迁移脚本生成的占位式 `raw_capture` 会伪装成真实采集结果
+  - 不把当前问题归因为 `projects/cli` 的 hook flush 解析失败；解析器本身在严格输入格式下是可工作的
+- 未解问题:
+  - 需要确认未来 flush 实现是通过 `agents run --input \"[hook flush]...\"` 复用 CLI 解析，还是由 hooks 直接写 `raw_capture`
+  - 需要确认上游 Codex hook 输入在真实环境中 `thread_id` 的稳定性，当前合同支持但是否总能拿到仍待真实批次验证
+- 下一步:
+  - 优先补 hooks -> raw_capture 的真正 flush 路径，再重新观察新样本质量
