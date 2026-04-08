@@ -1122,6 +1122,7 @@ export function createMemoryHookDriver(options: HookDriverOptions = {}): HookDri
 
       const feedbackEntries = [...state.pending_feedback];
       const shouldFlushRawCapture = Boolean(lastAssistantMessage) || feedbackEntries.length > 0;
+      let rawCaptureWriteSucceeded = !shouldFlushRawCapture;
       if (shouldFlushRawCapture) {
         try {
           const rawCapturePath = writeStopRawCapture(
@@ -1141,6 +1142,7 @@ export function createMemoryHookDriver(options: HookDriverOptions = {}): HookDri
             path: rawCapturePath,
             candidates: feedbackEntries.length,
           });
+          rawCaptureWriteSucceeded = true;
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
           logHookEvent(stateRoot, workspaceRoot, sessionId, {
@@ -1152,8 +1154,10 @@ export function createMemoryHookDriver(options: HookDriverOptions = {}): HookDri
         }
       }
 
-      state.pending_feedback = [];
-      updateLastFlush(state);
+      if (rawCaptureWriteSucceeded) {
+        state.pending_feedback = [];
+        updateLastFlush(state);
+      }
 
       maybePersistState(stateRoot, workspaceRoot, sessionId, state);
 

@@ -1,11 +1,11 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, readdir } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
 import { createMemoryHookDriver } from '../driver.ts';
-import { getHookLogPath } from '../state.ts';
+import { getHookLogPath, getSessionStatePath } from '../state.ts';
 import { bindAgent, repoRoot, spawnAgents, spawnReve } from './helpers.ts';
 
 async function countLongTermFiles(sharedRoot: string): Promise<number> {
@@ -309,6 +309,50 @@ test('Stop does not write raw capture when there is no assistant summary and no 
   assert.equal(stopResponse.continue, true);
   const afterRawCaptureCount = await countRawCaptureFiles(sharedRoot);
   assert.equal(afterRawCaptureCount, beforeRawCaptureCount);
+});
+
+test('Stop preserves pending feedback when raw-capture write fails', async () => {
+  const sharedRoot = await setupSharedAgent();
+  const workspaceRoot = await mkdtemp(join(tmpdir(), 'codex-hooks-workspace-write-failure-'));
+  await bindAgent(workspaceRoot, 'research-agent');
+
+  const stateRoot = await mkdtemp(join(tmpdir(), 'codex-hooks-state-write-failure-'));
+  const driver = createMemoryHookDriver({
+    sourceRepoRoot: repoRoot,
+    sharedRoot,
+    stateRoot,
+  });
+
+  const postResponse = driver.handlePostToolUse({
+    hook_event_name: 'PostToolUse',
+    session_id: 'session-write-failure',
+    turn_id: 'turn-write-failure',
+    tool_name: 'Bash',
+    tool_use_id: 'tool-write-failure',
+    cwd: workspaceRoot,
+    tool_input: { command: 'echo preserve' },
+    tool_response: 'preserve',
+  });
+  assert.ok(postResponse);
+
+  const memoryPath = join(sharedRoot, 'agents', 'research-agent', 'memory');
+  await rm(memoryPath, { recursive: true, force: true });
+  await writeFile(memoryPath, 'blocked-path', 'utf8');
+
+  const stopResponse = driver.handleStop({
+    hook_event_name: 'Stop',
+    session_id: 'session-write-failure',
+    turn_id: 'turn-write-failure',
+    cwd: workspaceRoot,
+    last_assistant_message: 'Stop should keep feedback on write error.',
+  });
+  assert.equal(stopResponse.continue, true);
+
+  const statePath = getSessionStatePath(stateRoot, workspaceRoot, 'session-write-failure');
+  const state = JSON.parse(await readFile(statePath, 'utf8')) as {
+    pending_feedback?: Array<unknown>;
+  };
+  assert.equal((state.pending_feedback ?? []).length > 0, true);
 });
 
 test('duplicate hook events are ignored after the first processing pass', async () => {
