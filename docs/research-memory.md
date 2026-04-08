@@ -4374,3 +4374,30 @@
   - `last_flush_at` 在失败路径下的断言增强可后续补充，但当前不阻塞
 - 下一步:
   - 进入 Task 3，补 hooks 直写 raw_capture 的 operator 文档与研究记录收尾
+
+## R-0136 hooks 直写 raw_capture Task 3 文档收尾
+
+- 日期: 2026-04-08
+- 目标: 让 hooks 直写 `raw_capture` 的新路径在 operator 文档中可见、可用、可解释
+- 输入:
+  - `scripts/codex-hooks/README.md`
+  - 提交: `57c076d`
+- 动作:
+  - 在 README 中补充 `Stop raw-capture behavior`
+  - 明确说明：
+    - `Stop` 现在直接写 stop-aggregated `raw_capture`
+    - `pending_feedback` 只在成功写入后清空
+    - 写入失败会保留 buffered feedback
+    - `projects/cli run` 仍是兼容/手工路径
+  - 独立运行：
+    - `node --test --experimental-strip-types --test-name-pattern "Stop" scripts/codex-hooks/test/driver.test.ts scripts/codex-hooks/test/stop-contract.test.ts`
+  - 完成 spec review 与 docs/code-quality review
+- 发现:
+  - 事实: README 已与当前 hooks 运行时语义保持一致
+  - 事实: Stop 相关测试通过，结果为 `4/4`
+  - 事实: 双评审均通过，未发现阻塞性文档问题
+- 决策:
+  - 接受 `57c076d` 作为 Task 3 的有效提交
+  - hooks 直写 raw_capture 这一轮实现与文档现已形成闭环
+- 下一步:
+  - 进入下一轮真实样本验证，检查新采集批次是否显著提升 `hydration_attempted` 与 `Episode` 质量
