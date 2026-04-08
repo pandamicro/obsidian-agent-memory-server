@@ -4001,3 +4001,40 @@
   - `rejected_missing_anchor` 目前尚未被真实样本覆盖
 - 下一步:
   - 进入 MVP3 Task 3，为候选 `raw_capture` 增加 context hydration
+
+## R-0124 MVP3 Task 3 验证：context hydration 与 raw-only fallback
+
+- 日期: 2026-04-08
+- 目标: 为 `reve distill` 增加可降级的上下文补全能力，让带锚点的 `raw_capture` 能在蒸馏前回填最小会话邻域
+- 输入:
+  - `projects/reve/src/cli.ts`
+  - `projects/reve/src/context-hydrator.ts`
+  - `projects/reve/src/codex-rollout-hydrator.ts`
+  - `projects/reve/test/reve.test.ts`
+  - `docs/plans/2026-04-08-reve-mvp3-episode-quality-implementation-plan.md`
+- 动作:
+  - 新增后端无关的 `ContextHydrator` 抽象
+  - 新增 `CodexRolloutHydrator`，优先用 `rollout_path_hint`，次选 `state_5.sqlite -> rollout_path`
+  - 在 `distill` 中只对 `needs_hydration` 候选做 hydration
+  - hydration 成功时把 `hydrated_context`、补强后的 `evidence_refs` 与 `assistant_summary` 注入 distill 输入
+  - hydration 不可用时自动降级为 raw-only distill
+  - 新增 rollout fixture 测试、fallback 测试和缺失 target 测试
+  - 运行 `npm --prefix projects/reve test`
+- 发现:
+  - 事实: `projects/reve` 的 `RawCaptureEvent` 现已纳入 `thread_id / turn_id / event / rollout_path_hint`
+  - 事实: `ContextHydrator` 已与具体后端解耦，Codex 只作为首个 adapter 实现
+  - 事实: `CodexRolloutHydrator` 能从 rollout JSONL 中按 `turn_id` 切出最小 `user / assistant / tool` 上下文窗口
+  - 事实: 当 hydration 成功时，provider 请求体中会显式出现 `hydrated_context`，且包含回填到的 assistant outcome
+  - 事实: 当 hydration 不可用时，distill 不会失败，而是继续走 raw-only 路径
+  - 事实: 本轮代码评审中识别到一个安全问题：若 rollout 可读但 `turn_id / event` 对不上，旧逻辑会退到最后一条事件并注入无关上下文；现已改为返回 `target_not_found`，避免误注入
+  - 事实: `projects/reve` 全量测试通过，当前结果为 `23/23`
+- 决策:
+  - 接受 Task 3 的最小实现以 `rollout_path_hint` happy path 为主，`state_5.sqlite` fallback 先保留实现位
+  - 接受 hydration 失败默认降级而非中断 distill
+  - 接受“找不到目标 turn/event 就返回 unavailable”作为安全默认值
+- 未解问题:
+  - `state_5.sqlite` fallback 还没有独立回归测试
+  - 当前 run summary 还没有记录 hydration 尝试/成功/失败计数，这留给后续任务补齐
+  - rollout 事件类型的兼容面目前只覆盖最小文本提取规则，后续可能仍需按真实样本扩展
+- 下一步:
+  - 进入 MVP3 Task 4，收紧 distill prompt 与输出 schema

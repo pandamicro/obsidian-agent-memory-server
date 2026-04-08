@@ -3,6 +3,8 @@ import { readFileSync, realpathSync } from 'node:fs';
 import { randomUUID, createHash } from 'node:crypto';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { createCodexRolloutHydrator } from './codex-rollout-hydrator.ts';
+import type { HydratedContextWindow } from './context-hydrator.ts';
 
 type AgentIdentity = {
   agent_id: string;
@@ -37,10 +39,15 @@ type RawCaptureEvent = {
   observed_at: string;
   source_kind: 'hook_flush' | 'direct_input';
   session_id: string | null;
+  thread_id?: string | null;
+  turn_id?: string | null;
+  event?: string | null;
+  rollout_path_hint?: string | null;
   workspace_root: string | null;
   assistant_summary: string | null;
   candidates: ParsedShortTermCandidate[];
   input: string;
+  hydrated_context?: HydratedContextWindow;
 };
 
 type DistilledShortTerm = {
@@ -64,7 +71,7 @@ type DistilledShortTerm = {
 
 type DistillPrefilterDecision =
   | { decision: 'reject'; reason: 'low_signal' | 'missing_anchor' }
-  | { decision: 'candidate' };
+  | { decision: 'candidate'; hydration: 'raw_only' | 'needs_hydration' };
 
 type ModelProviderRuntime = {
   provider: string;
@@ -799,13 +806,20 @@ function prefilterRawCapture(raw: RawCaptureEvent): DistillPrefilterDecision {
   const hasAssistantSummary = Boolean(raw.assistant_summary?.trim());
   const hasCandidates = raw.candidates.length > 0;
   const hasSessionAnchor = Boolean(raw.session_id?.trim());
+  const hasThreadAnchor = Boolean(raw.thread_id?.trim());
+  const hasTurnAnchor = Boolean(raw.turn_id?.trim());
+  const hasHydrationAnchor = hasSessionAnchor || hasThreadAnchor || hasTurnAnchor;
   const hasEvidenceRefs = raw.evidence_refs.length > 0;
 
   if (raw.source_kind === 'direct_input' && !hasAssistantSummary && !hasCandidates && !hasSessionAnchor) {
     return { decision: 'reject', reason: hasEvidenceRefs ? 'low_signal' : 'missing_anchor' };
   }
 
-  return { decision: 'candidate' };
+  if (raw.source_kind === 'direct_input' && !hasAssistantSummary && !hasCandidates && hasHydrationAnchor) {
+    return { decision: 'candidate', hydration: 'needs_hydration' };
+  }
+
+  return { decision: 'candidate', hydration: 'raw_only' };
 }
 
 function prepareEpisodePayload(episodes: ShortTermEpisode[]) {
@@ -1115,6 +1129,7 @@ async function handleDistill(agentId: string, limitRaw: string | undefined, root
     let rejectedLowSignal = 0;
     let rejectedMissingAnchor = 0;
     let runtimeConfig: ModelProviderRuntime | null = null;
+    const hydrator = createCodexRolloutHydrator();
 
     try {
       const currentRuntime = readDistillRuntimeConfig();
@@ -1146,7 +1161,31 @@ async function handleDistill(agentId: string, limitRaw: string | undefined, root
             continue;
           }
 
-          const distilled = await distillRawCapture(item.value);
+          let distillInput: RawCaptureEvent = item.value;
+          if (prefilter.hydration === 'needs_hydration') {
+            const hydrated = await hydrator.hydrate({
+              session_id: item.value.session_id,
+              thread_id: item.value.thread_id ?? null,
+              turn_id: item.value.turn_id ?? null,
+              event: item.value.event ?? null,
+              rollout_path_hint: item.value.rollout_path_hint ?? null,
+              workspace_root: item.value.workspace_root,
+              message_id: item.value.message_id,
+            });
+
+            if (hydrated.status === 'success') {
+              const mergedEvidence = Array.from(new Set([...item.value.evidence_refs, ...hydrated.evidence_refs]));
+              const assistantSummary = hydrated.context_window.assistant.join(' ').trim();
+              distillInput = {
+                ...item.value,
+                evidence_refs: mergedEvidence,
+                assistant_summary: assistantSummary || item.value.assistant_summary,
+                hydrated_context: hydrated.context_window,
+              };
+            }
+          }
+
+          const distilled = await distillRawCapture(distillInput);
           if (distilled.quality.status === 'rejected') {
             skippedCount += 1;
             continue;

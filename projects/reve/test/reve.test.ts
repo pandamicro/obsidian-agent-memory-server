@@ -7,6 +7,7 @@ import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 import test from 'node:test';
+import { createCodexRolloutHydrator } from '../src/codex-rollout-hydrator.ts';
 
 const revePath = resolve(fileURLToPath(new URL('../src/cli.ts', import.meta.url)));
 const launcherPath = resolve(fileURLToPath(new URL('../../../bin/agents', import.meta.url)));
@@ -177,6 +178,16 @@ async function writeDistillResponsesConfig(baseUrl: string) {
   return fakeHome;
 }
 
+async function writeRawCaptureRecord(
+  rawCaptureDir: string,
+  value: Record<string, unknown>,
+  suffix = 'raw-record',
+) {
+  await mkdir(rawCaptureDir, { recursive: true });
+  const path = join(rawCaptureDir, `2026-04-08T00-00-00.000Z-${suffix}.json`);
+  await writeFile(path, `${JSON.stringify(value, null, 2)}\n`, 'utf8');
+}
+
 test('distill converts pending raw-capture records into short-term memory via mock model', async () => {
   const workspaceRoot = await mkdtemp(join(tmpdir(), 'agent-reve-distill-'));
   const sharedRoot = await mkdtemp(join(tmpdir(), 'agent-reve-shared-'));
@@ -313,6 +324,215 @@ test('distill prefilter rejects low-signal direct input before provider request'
       assert.equal(successSummary.prefilter_rejected, 1);
       assert.equal(successSummary.rejected_low_signal, 1);
     }
+  } finally {
+    await server.close();
+  }
+});
+
+test('codex rollout hydrator slices compact context around turn id', async () => {
+  const workspaceRoot = await mkdtemp(join(tmpdir(), 'agent-reve-hydrator-slice-'));
+  const rolloutPath = join(workspaceRoot, 'rollout-test.jsonl');
+  const rolloutLines = [
+    JSON.stringify({ type: 'session_meta', payload: { id: 'thread-1' } }),
+    JSON.stringify({ type: 'user_message', payload: { turn_id: 'turn-1', text: 'user asks about memory quality' } }),
+    JSON.stringify({ type: 'assistant_message', payload: { turn_id: 'turn-1', text: 'assistant gives distill guidance' } }),
+    JSON.stringify({ type: 'tool_result', payload: { turn_id: 'turn-1', output: 'tool output ok' } }),
+    JSON.stringify({ type: 'assistant_message', payload: { turn_id: 'turn-2', text: 'later unrelated turn' } }),
+  ];
+  await writeFile(rolloutPath, `${rolloutLines.join('\n')}\n`, 'utf8');
+
+  const hydrator = createCodexRolloutHydrator();
+  const hydrated = await hydrator.hydrate({
+    session_id: 'session-1',
+    thread_id: 'thread-1',
+    turn_id: 'turn-1',
+    event: 'stop',
+    rollout_path_hint: rolloutPath,
+  });
+
+  assert.equal(hydrated.status, 'success');
+  if (hydrated.status === 'success') {
+    assert.match(hydrated.context_window.user[0] ?? '', /user asks about memory quality/i);
+    assert.match(hydrated.context_window.assistant[0] ?? '', /assistant gives distill guidance/i);
+    assert.match(hydrated.context_window.tool[0] ?? '', /tool output ok/i);
+    assert(hydrated.evidence_refs.some((ref) => ref.includes('rollout:')));
+  }
+});
+
+test('codex rollout hydrator returns unavailable when target turn is missing', async () => {
+  const workspaceRoot = await mkdtemp(join(tmpdir(), 'agent-reve-hydrator-missing-turn-'));
+  const rolloutPath = join(workspaceRoot, 'rollout-missing-turn.jsonl');
+  const rolloutLines = [
+    JSON.stringify({ type: 'session_meta', payload: { id: 'thread-missing' } }),
+    JSON.stringify({ type: 'user_message', payload: { turn_id: 'turn-a', text: 'first user message' } }),
+    JSON.stringify({ type: 'assistant_message', payload: { turn_id: 'turn-a', text: 'first assistant message' } }),
+  ];
+  await writeFile(rolloutPath, `${rolloutLines.join('\n')}\n`, 'utf8');
+
+  const hydrator = createCodexRolloutHydrator();
+  const hydrated = await hydrator.hydrate({
+    session_id: 'session-missing',
+    thread_id: 'thread-missing',
+    turn_id: 'turn-does-not-exist',
+    event: 'stop',
+    rollout_path_hint: rolloutPath,
+  });
+
+  assert.equal(hydrated.status, 'unavailable');
+  if (hydrated.status === 'unavailable') {
+    assert.equal(hydrated.reason, 'target_not_found');
+  }
+});
+
+test('distill hydrates candidate raw capture via rollout_path_hint before provider call', async () => {
+  const workspaceRoot = await mkdtemp(join(tmpdir(), 'agent-reve-distill-hydrated-'));
+  const sharedRoot = await mkdtemp(join(tmpdir(), 'agent-reve-distill-hydrated-shared-'));
+  const sharedEnv = {
+    OBSIDIAN_AGENT_MEMORY_SERVER_SHARED_ROOT: sharedRoot,
+  };
+  assert.equal((await runLauncher(['init', '--agent-id', 'research-agent'], workspaceRoot, sharedEnv)).code, 0);
+
+  const rolloutPath = join(workspaceRoot, 'rollout-hydrated.jsonl');
+  await writeFile(
+    rolloutPath,
+    `${[
+      JSON.stringify({ type: 'session_meta', payload: { id: 'thread-hydrated' } }),
+      JSON.stringify({ type: 'user_message', payload: { turn_id: 'turn-hydrated', text: 'user asks for robust filtering' } }),
+      JSON.stringify({ type: 'assistant_message', payload: { turn_id: 'turn-hydrated', text: 'assistant reports verified outcome' } }),
+      JSON.stringify({ type: 'tool_result', payload: { turn_id: 'turn-hydrated', output: 'tool execution completed' } }),
+    ].join('\n')}\n`,
+    'utf8',
+  );
+
+  const agentRoot = join(sharedRoot, 'agents', 'research-agent');
+  const rawCaptureDir = join(agentRoot, 'memory', 'raw-capture');
+  await writeRawCaptureRecord(rawCaptureDir, {
+    schema_version: '1',
+    message_id: 'raw-hydrated-1',
+    identity_id: 'research-agent',
+    object_kind: 'raw_capture',
+    object_ref: 'raw-capture:raw-hydrated-1',
+    event_type: 'captured',
+    evidence_refs: ['input:raw-hydrated-1'],
+    observed_at: '2026-04-08T00:00:00.000Z',
+    source_kind: 'direct_input',
+    session_id: 'session-hydrated',
+    thread_id: 'thread-hydrated',
+    turn_id: 'turn-hydrated',
+    event: 'stop',
+    rollout_path_hint: rolloutPath,
+    workspace_root: workspaceRoot,
+    assistant_summary: null,
+    candidates: [],
+    input: 'please extract memory from this turn',
+  }, 'raw-hydrated-1');
+
+  let capturedBody: Record<string, unknown> | null = null;
+  const server = await startResponsesTestServer([
+    JSON.stringify({
+      event_type: 'captured',
+      object_kind: 'episode',
+      signal_type: 'environmental_outcome',
+      polarity: 'supporting',
+      summary: 'hydrated evidence indicates reusable outcome',
+      evidence_refs: ['rollout:turn-hydrated'],
+      quality: {
+        observable: true,
+        linkable: true,
+        evaluatable: true,
+        distillable: true,
+        status: 'pass',
+        reasons: [],
+      },
+      confidence: 0.8,
+      parser_reason: 'hydrated-test',
+    }),
+  ], (body) => {
+    capturedBody = body;
+  });
+
+  try {
+    const fakeHome = await writeDistillResponsesConfig(server.baseUrl);
+    const distillResult = await runReve(
+      ['distill', '--agent-id', 'research-agent', '--limit', '10'],
+      workspaceRoot,
+      { ...sharedEnv, HOME: fakeHome },
+    );
+    assert.equal(distillResult.code, 0);
+    assert.match(distillResult.stdout, /Distilled short-term records: 1/);
+    assert(capturedBody);
+    const prompt = String((capturedBody as { input?: string }).input ?? '');
+    assert.match(prompt, /hydrated_context/i);
+    assert.match(prompt, /assistant reports verified outcome/i);
+  } finally {
+    await server.close();
+  }
+});
+
+test('distill falls back to raw-only when hydration is unavailable', async () => {
+  const workspaceRoot = await mkdtemp(join(tmpdir(), 'agent-reve-distill-hydration-fallback-'));
+  const sharedRoot = await mkdtemp(join(tmpdir(), 'agent-reve-distill-hydration-fallback-shared-'));
+  const sharedEnv = {
+    OBSIDIAN_AGENT_MEMORY_SERVER_SHARED_ROOT: sharedRoot,
+  };
+  assert.equal((await runLauncher(['init', '--agent-id', 'research-agent'], workspaceRoot, sharedEnv)).code, 0);
+
+  const agentRoot = join(sharedRoot, 'agents', 'research-agent');
+  const rawCaptureDir = join(agentRoot, 'memory', 'raw-capture');
+  await writeRawCaptureRecord(rawCaptureDir, {
+    schema_version: '1',
+    message_id: 'raw-hydration-fallback-1',
+    identity_id: 'research-agent',
+    object_kind: 'raw_capture',
+    object_ref: 'raw-capture:raw-hydration-fallback-1',
+    event_type: 'captured',
+    evidence_refs: ['input:raw-hydration-fallback-1'],
+    observed_at: '2026-04-08T00:00:00.000Z',
+    source_kind: 'direct_input',
+    session_id: 'session-fallback',
+    thread_id: 'thread-fallback',
+    turn_id: 'turn-fallback',
+    event: 'stop',
+    rollout_path_hint: '/path/does/not/exist/rollout.jsonl',
+    workspace_root: workspaceRoot,
+    assistant_summary: null,
+    candidates: [],
+    input: 'try distill even if hydration path fails',
+  }, 'raw-hydration-fallback-1');
+
+  const server = await startResponsesTestServer([
+    JSON.stringify({
+      event_type: 'captured',
+      object_kind: 'episode',
+      signal_type: 'explicit',
+      polarity: 'supporting',
+      summary: 'raw-only fallback still distilled',
+      evidence_refs: ['input:raw-hydration-fallback-1'],
+      quality: {
+        observable: true,
+        linkable: true,
+        evaluatable: true,
+        distillable: true,
+        status: 'pass',
+        reasons: [],
+      },
+      confidence: 0.65,
+      parser_reason: 'fallback-test',
+    }),
+  ]);
+
+  try {
+    const fakeHome = await writeDistillResponsesConfig(server.baseUrl);
+    const distillResult = await runReve(
+      ['distill', '--agent-id', 'research-agent', '--limit', '10'],
+      workspaceRoot,
+      { ...sharedEnv, HOME: fakeHome },
+    );
+    assert.equal(distillResult.code, 0);
+    assert.match(distillResult.stdout, /Distilled short-term records: 1/);
+
+    const shortTermFiles = await readdir(join(agentRoot, 'memory', 'short-term'));
+    assert.equal(shortTermFiles.length, 1);
   } finally {
     await server.close();
   }
