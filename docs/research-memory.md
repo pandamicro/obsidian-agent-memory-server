@@ -3706,3 +3706,40 @@
 - 下一步:
   - 在 `projects/reve/README.md` 补充真实 provider 验证后的人工评估要点
   - 继续围绕 short-term 输入质量做下一轮收敛，而不是扩长期对象边界
+
+## R-0116 Unity Optimization Agent 数据蒸馏验证
+
+- 日期: 2026-04-08
+- 目标: 用 `unity-optimization-agent` 已收集的真实 `raw_capture` 数据验证 `reve` 的短期与长期蒸馏效果
+- 输入:
+  - `agents/unity-optimization-agent/identity/agent_identity.json`
+  - `agents/unity-optimization-agent/memory/raw-capture/*.json`
+  - 真实 provider 配置:
+    - `OBSIDIAN_AGENT_MEMORY_SERVER_DISTILL_PROVIDER=codex`
+    - `OBSIDIAN_AGENT_MEMORY_SERVER_DISTILL_MODEL=gpt-5.2`
+    - `OBSIDIAN_AGENT_MEMORY_SERVER_CONSOLIDATE_PROVIDER=codex`
+    - `OBSIDIAN_AGENT_MEMORY_SERVER_CONSOLIDATE_MODEL=gpt-5.2`
+  - 隔离验证根目录: `/tmp/reve-unity-eval-UZzeH7`
+- 动作:
+  - 不复用仓库内旧的 `mock/placeholder` short-term 与 long-term，改为只复制 `identity + raw_capture` 到隔离目录
+  - 运行真实 `distill --agent-id unity-optimization-agent --limit 20`
+  - 检查生成 episode 的 `quality.status` 分布与摘要主题
+  - 运行真实 `consolidate --agent-id unity-optimization-agent --limit 8 --batch-size 4`
+  - 运行真实 `drive --agent-id unity-optimization-agent --limit 8 --batch-size 4` 验证整链幂等性
+- 发现:
+  - 事实: 真实 `distill` 成功处理 8 条 `raw_capture`，生成 8 条 episode
+  - 事实: 8 条 episode 中 `pass = 4`、`needs_review = 4`，明显优于此前 `mock` 产物
+  - 事实: 通过真实 distill 提炼后，Unity licensing / LicenseClient / 缺失 XML test result 这组三条 episode 具备较强一致性，能稳定形成一条高质量 `Learning`
+  - 事实: 第一条 `Learning` 总结出一个可复用 operational learning：当 `run-playmode-bridge.bash` 在 Unity 启动阶段因 LicenseClient 连接失败而超时时，通常不会生成 NUnit XML，只能从 `.log/.summary.log` 判断运行失败形态
+  - 事实: 第二批 episode 被 consolidate 成一条更宽泛的 `Learning`，把 batchmode 命令流程、EditorWindow 测试工具建议、字体快照复核工作流合并在一起；该 learning 虽成功生成，但 `quality.status = needs_review`
+  - 事实: `drive` 在相同输入上没有新增 `Learning`，表现为 `distill` 跳过（`no_pending_raw_captures`）且 `consolidate` 不再创建重复 learning，说明幂等性正常
+- 假设:
+  - 假设: 若短期 episode 先按主题或任务簇做更细的聚类，再进入 consolidate，第二批这种“跨主题拼接”的 learning 质量会明显提升
+- 决策:
+  - 将本次结果记为“unity-optimization-agent 数据已证明真实链路可以产出有效长期记忆”
+  - 同时明确：长期学习质量仍强依赖 short-term 的主题纯度与批次切分策略，固定窗口 batching 只能作为 MVP 基线
+- 未解问题:
+  - 是否应在 consolidate 前增加基于主题/信号类型的轻量分桶，而不是只按固定窗口切批
+  - 对于 direct_input 型 raw_capture，是否应在 distill 阶段更强地拒绝“纯请求/纯提问”类 episode 进入长期候选池
+- 下一步:
+  - 后续若继续提升 MVP2 质量，应优先研究 short-term 的分桶与过滤，而不是继续扩大长期对象类型
