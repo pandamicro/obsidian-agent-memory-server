@@ -39,3 +39,14 @@ test('normalizeHookEnvelope emits derived metadata with confidence clamping', ()
   assert.equal(envelope.turn_id, 'turn-2');
   assert.deepEqual(envelope.context, { signal: 'needs-input' });
 });
+
+test('normalizeHookEnvelope preserves thread_id and turn_id when provided', () => {
+  const envelope = normalizeHookEnvelope(
+    { session_id: 'session-3', thread_id: 'thread-3', turn_id: 'turn-3' },
+    'UserPromptSubmit',
+  );
+
+  assert.equal(envelope.session_id, 'session-3');
+  assert.equal(envelope.thread_id, 'thread-3');
+  assert.equal(envelope.turn_id, 'turn-3');
+});
