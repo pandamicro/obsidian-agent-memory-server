@@ -3743,3 +3743,25 @@
   - 对于 direct_input 型 raw_capture，是否应在 distill 阶段更强地拒绝“纯请求/纯提问”类 episode 进入长期候选池
 - 下一步:
   - 后续若继续提升 MVP2 质量，应优先研究 short-term 的分桶与过滤，而不是继续扩大长期对象类型
+
+## R-0117 MVP2 进展总结归档
+
+- 日期: 2026-04-08
+- 目标: 将 MVP2 当前实现、验证和剩余问题整理成单独文档，作为后续阶段切换时的基线
+- 输入:
+  - `docs/plans/2026-04-07-reve-mvp2-offline-distillation-implementation-plan.md`
+  - `projects/reve` 当前代码与测试状态
+  - R-0115 与 R-0116 的真实 provider 验证结果
+- 动作:
+  - 新增 `docs/plans/2026-04-08-reve-mvp2-progress-summary.md`
+  - 汇总已完成任务、真实验证结果、当前质量判断、主要风险与下一阶段建议
+- 发现:
+  - 事实: MVP2 的核心离线驱动器已经完成，并经真实 provider 验证
+  - 事实: `unity-optimization-agent` 数据已经证明当前链路可产出真实 `Learning`
+  - 事实: 当前主要问题已从“链路是否可用”转为“short-term 质量与 batching 纯度是否足够”
+- 决策:
+  - 后续涉及 MVP2 进展回顾时，优先引用这份进展总结，而不是从研究日志与 commits 反向拼接
+- 未解问题:
+  - 进展总结后续是否需要升级为阶段 checkpoint 机制
+- 下一步:
+  - 若进入下一轮 MVP2 迭代，直接基于该总结中的风险与建议展开
