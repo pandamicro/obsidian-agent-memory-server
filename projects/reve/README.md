@@ -28,6 +28,31 @@ bin/reve drive --agent-id research-agent --limit 20 --batch-size 10
 - `evidence_refs` 是否能直接回链到原始输入或明确 turn，而不是只有间接提示
 - 如果 `consolidate` 成功但结果是 `needs_more_evidence`，优先判断 short-term 是否仍然偏规范性表述、观察性不足，而不是直接怀疑长期蒸馏链路
 
+## Distill Run Summary 解读（MVP3）
+
+`distill` 每次运行会在 `agents/<agent-id>/runs/*.json` 写入结构化统计，重点字段：
+
+- `prefilter_rejected`、`rejected_low_signal`、`rejected_missing_anchor`
+- `hydration_attempted`、`hydration_succeeded`、`hydration_unavailable`
+- `episodes_created_raw_only`、`episodes_created_hydrated`
+- `rejected_insufficient_context`、`rejected_multi_signal`、`rejected_provider_other`
+
+如何判断 rejection-heavy 是否健康：
+
+- 当 `prefilter_rejected` 或 `rejected_insufficient_context` 较高，同时 `item_error_count=0` 时，通常表示系统在主动拒绝低价值输入，这在 MVP3 是预期行为
+- 当 rejection 很高且 `episodes_created_*` 接近 0，需要先检查 raw_capture 是否缺乏 outcome 证据，再决定是否调整 distill 策略
+
+如何排查 hydration 失败：
+
+- 先看 `hydration_attempted` 与 `hydration_unavailable` 的比例
+- 比例偏高时，检查同次 run 的 `last_item_error`、raw_capture 中的 `thread_id/turn_id/rollout_path_hint` 是否可用
+- `hydration_unavailable` 高但 `episodes_created_raw_only` 仍有产出，说明系统已按设计降级到 raw-only distill
+
+如何解读 `episode_created_raw_only` vs `episode_created_hydrated`：
+
+- `episodes_created_hydrated` 高：说明 episode 主要依赖回填上下文，通常 evidence 可追溯性更好
+- `episodes_created_raw_only` 高：说明 episode 主要由原始 raw_capture 直接蒸馏而来，应重点抽查是否出现抽象化、证据弱链接
+
 `bin/reve` 会在启动时自动加载仓库根目录的 `.env.agent-memory`。
 如需自定义路径，可设置 `OBSIDIAN_AGENT_MEMORY_SERVER_ENV_FILE`。
 

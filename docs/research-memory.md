@@ -4110,3 +4110,39 @@
   - provider 连续返回非法 JSON / 非法 schema 时，当前只会累加 `item_error_count`，不会整体 fail run
 - 下一步:
   - 进入 MVP3 Task 5，补齐 distill run summary 的可观测性与 operator 文档
+
+## R-0127 MVP3 Task 5 验证：distill 可观测性与 operator 解读
+
+- 日期: 2026-04-08
+- 目标: 扩展 `distill` 运行摘要与操作文档，使 rejection-heavy 与 hydration 降级路径可被稳定观测
+- 输入:
+  - `projects/reve/src/cli.ts`
+  - `projects/reve/test/reve.test.ts`
+  - `projects/reve/README.md`
+  - `docs/plans/2026-04-08-reve-mvp3-episode-quality-implementation-plan.md`
+- 动作:
+  - 为 `distill` 运行结果与 run summary 增加统计字段：
+    - prefilter: `prefilter_rejected / rejected_low_signal / rejected_missing_anchor`
+    - hydration: `hydration_attempted / hydration_succeeded / hydration_unavailable`
+    - episode来源: `episodes_created_raw_only / episodes_created_hydrated`
+    - rejection分类: `rejected_insufficient_context / rejected_multi_signal / rejected_provider_other`
+  - 扩展 CLI 终端输出，显式打印上述统计摘要
+  - 扩展回归测试，覆盖：
+    - prefilter 场景下统计字段落盘
+    - hydration 成功场景下 `hydration_attempted` 与 `episodes_created_hydrated`
+    - provider rejection 场景下 `rejected_insufficient_context`
+  - 在 README 增加 `Distill Run Summary` 的 operator 解读指南
+  - 运行 `npm --prefix projects/reve test`
+- 发现:
+  - 事实: 变更前 `distill` run summary 对 hydration 与 episode来源缺少可观测统计，operator 只能靠结果文件倒推
+  - 事实: 变更后，`distill` 成功 run 会稳定记录 prefilter/hydration/episode来源/rejection分类四类统计
+  - 事实: 变更后，CLI 会直接输出上述统计，便于快速判断 rejection-heavy 是否健康
+  - 事实: `projects/reve` 全量测试通过，当前结果为 `28/28`
+- 决策:
+  - 接受 Task 5 以“增强可观测性”为主，不调整 distill 核心语义
+  - 接受 provider rejection 分类先用轻量文本规则（`insufficient_context`/`multi_signal`/other），后续可再细化
+- 未解问题:
+  - 当前 rejection 分类仍依赖 `parser_reason` 与 reason 文本，不是强枚举契约
+  - `item_error_count` 目前只做观测，不触发自动 fail-fast
+- 下一步:
+  - 进入 MVP3 Task 6，使用代表性 agent 数据进行真实 provider 验证并形成 checkpoint

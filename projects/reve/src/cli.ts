@@ -164,6 +164,18 @@ type DistillCommandResult = {
   scanned: number;
   distilledCount: number;
   skippedCount: number;
+  prefilterRejected: number;
+  rejectedLowSignal: number;
+  rejectedMissingAnchor: number;
+  hydrationAttempted: number;
+  hydrationSucceeded: number;
+  hydrationUnavailable: number;
+  episodesCreatedRawOnly: number;
+  episodesCreatedHydrated: number;
+  rejectedInsufficientContext: number;
+  rejectedMultiSignal: number;
+  rejectedProviderOther: number;
+  itemErrorCount: number;
 };
 
 type ConsolidateCommandResult = {
@@ -970,6 +982,20 @@ function prefilterRawCapture(raw: RawCaptureEvent): DistillPrefilterDecision {
   return { decision: 'candidate', hydration: 'raw_only' };
 }
 
+function classifyModelRejection(distilled: DistilledShortTerm): 'insufficient_context' | 'multi_signal' | 'other' {
+  const parserReason = distilled.parser_reason.trim().toLowerCase();
+  const reasonText = distilled.quality.reasons.join(' ').trim().toLowerCase();
+  const combined = `${parserReason} ${reasonText}`.trim();
+
+  if (combined.includes('insufficient_context')) {
+    return 'insufficient_context';
+  }
+  if (combined.includes('multi_signal')) {
+    return 'multi_signal';
+  }
+  return 'other';
+}
+
 function prepareEpisodePayload(episodes: ShortTermEpisode[]) {
   return episodes.map((episode, index) => ({
     id: episode.message_id ?? episode.object_ref ?? `episode-${index + 1}`,
@@ -1276,6 +1302,14 @@ async function handleDistill(agentId: string, limitRaw: string | undefined, root
     let prefilterRejected = 0;
     let rejectedLowSignal = 0;
     let rejectedMissingAnchor = 0;
+    let hydrationAttempted = 0;
+    let hydrationSucceeded = 0;
+    let hydrationUnavailable = 0;
+    let episodesCreatedRawOnly = 0;
+    let episodesCreatedHydrated = 0;
+    let rejectedInsufficientContext = 0;
+    let rejectedMultiSignal = 0;
+    let rejectedProviderOther = 0;
     let itemErrorCount = 0;
     let lastItemError: string | null = null;
     let runtimeConfig: ModelProviderRuntime | null = null;
@@ -1294,7 +1328,25 @@ async function handleDistill(agentId: string, limitRaw: string | undefined, root
       if (scanned === 0) {
         status = 'skipped';
         skipReason = 'no_pending_raw_captures';
-        return { runId, status, scanned, distilledCount, skippedCount };
+        return {
+          runId,
+          status,
+          scanned,
+          distilledCount,
+          skippedCount,
+          prefilterRejected,
+          rejectedLowSignal,
+          rejectedMissingAnchor,
+          hydrationAttempted,
+          hydrationSucceeded,
+          hydrationUnavailable,
+          episodesCreatedRawOnly,
+          episodesCreatedHydrated,
+          rejectedInsufficientContext,
+          rejectedMultiSignal,
+          rejectedProviderOther,
+          itemErrorCount,
+        };
       }
 
       for (const item of pending) {
@@ -1312,7 +1364,9 @@ async function handleDistill(agentId: string, limitRaw: string | undefined, root
           }
 
           let distillInput: RawCaptureEvent = item.value;
+          let usedHydratedContext = false;
           if (prefilter.hydration === 'needs_hydration') {
+            hydrationAttempted += 1;
             const hydrated = await hydrator.hydrate({
               session_id: item.value.session_id,
               thread_id: item.value.thread_id ?? null,
@@ -1324,6 +1378,7 @@ async function handleDistill(agentId: string, limitRaw: string | undefined, root
             });
 
             if (hydrated.status === 'success') {
+              hydrationSucceeded += 1;
               const mergedEvidence = Array.from(new Set([...item.value.evidence_refs, ...hydrated.evidence_refs]));
               const assistantSummary = hydrated.context_window.assistant.join(' ').trim();
               distillInput = {
@@ -1332,12 +1387,23 @@ async function handleDistill(agentId: string, limitRaw: string | undefined, root
                 assistant_summary: assistantSummary || item.value.assistant_summary,
                 hydrated_context: hydrated.context_window,
               };
+              usedHydratedContext = true;
+            } else {
+              hydrationUnavailable += 1;
             }
           }
 
           const distilled = await distillRawCapture(distillInput);
           if (distilled.quality.status === 'rejected') {
             skippedCount += 1;
+            const rejection = classifyModelRejection(distilled);
+            if (rejection === 'insufficient_context') {
+              rejectedInsufficientContext += 1;
+            } else if (rejection === 'multi_signal') {
+              rejectedMultiSignal += 1;
+            } else {
+              rejectedProviderOther += 1;
+            }
             continue;
           }
 
@@ -1368,6 +1434,11 @@ async function handleDistill(agentId: string, limitRaw: string | undefined, root
           const shortTermPath = join(shortTermDir, `${observedAt.replaceAll(':', '-')}-${shortTermId}.json`);
           await writeJsonFile(shortTermPath, shortTermObject);
           distilledCount += 1;
+          if (usedHydratedContext) {
+            episodesCreatedHydrated += 1;
+          } else {
+            episodesCreatedRawOnly += 1;
+          }
         } catch (error) {
           skippedCount += 1;
           itemErrorCount += 1;
@@ -1375,7 +1446,25 @@ async function handleDistill(agentId: string, limitRaw: string | undefined, root
         }
       }
 
-      return { runId, status, scanned, distilledCount, skippedCount };
+      return {
+        runId,
+        status,
+        scanned,
+        distilledCount,
+        skippedCount,
+        prefilterRejected,
+        rejectedLowSignal,
+        rejectedMissingAnchor,
+        hydrationAttempted,
+        hydrationSucceeded,
+        hydrationUnavailable,
+        episodesCreatedRawOnly,
+        episodesCreatedHydrated,
+        rejectedInsufficientContext,
+        rejectedMultiSignal,
+        rejectedProviderOther,
+        itemErrorCount,
+      };
     } catch (error) {
       status = 'failed';
       failureReason = error instanceof Error ? error.message : String(error);
@@ -1393,6 +1482,14 @@ async function handleDistill(agentId: string, limitRaw: string | undefined, root
         prefilter_rejected: prefilterRejected,
         rejected_low_signal: rejectedLowSignal,
         rejected_missing_anchor: rejectedMissingAnchor,
+        hydration_attempted: hydrationAttempted,
+        hydration_succeeded: hydrationSucceeded,
+        hydration_unavailable: hydrationUnavailable,
+        episodes_created_raw_only: episodesCreatedRawOnly,
+        episodes_created_hydrated: episodesCreatedHydrated,
+        rejected_insufficient_context: rejectedInsufficientContext,
+        rejected_multi_signal: rejectedMultiSignal,
+        rejected_provider_other: rejectedProviderOther,
         item_error_count: itemErrorCount,
         last_item_error: lastItemError,
         status,
@@ -1410,6 +1507,19 @@ async function handleDistill(agentId: string, limitRaw: string | undefined, root
   if (runResult.status === 'success') {
     console.log(`Distilled short-term records: ${runResult.distilledCount}`);
     console.log(`Skipped raw captures: ${runResult.skippedCount}`);
+    console.log(
+      `Prefilter rejected: ${runResult.prefilterRejected} (low_signal=${runResult.rejectedLowSignal}, missing_anchor=${runResult.rejectedMissingAnchor})`,
+    );
+    console.log(
+      `Hydration: attempted=${runResult.hydrationAttempted}, succeeded=${runResult.hydrationSucceeded}, unavailable=${runResult.hydrationUnavailable}`,
+    );
+    console.log(
+      `Episodes created: raw_only=${runResult.episodesCreatedRawOnly}, hydrated=${runResult.episodesCreatedHydrated}`,
+    );
+    console.log(
+      `Model rejections: insufficient_context=${runResult.rejectedInsufficientContext}, multi_signal=${runResult.rejectedMultiSignal}, other=${runResult.rejectedProviderOther}`,
+    );
+    console.log(`Item errors: ${runResult.itemErrorCount}`);
   } else if (runResult.status === 'skipped') {
     console.log('No pending raw captures to distill; skipping.');
   }

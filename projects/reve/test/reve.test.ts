@@ -323,6 +323,13 @@ test('distill prefilter rejects low-signal direct input before provider request'
       assert.equal(successSummary.skipped, 1);
       assert.equal(successSummary.prefilter_rejected, 1);
       assert.equal(successSummary.rejected_low_signal, 1);
+      assert.equal(successSummary.hydration_attempted, 0);
+      assert.equal(successSummary.hydration_succeeded, 0);
+      assert.equal(successSummary.hydration_unavailable, 0);
+      assert.equal(successSummary.episodes_created_raw_only, 0);
+      assert.equal(successSummary.episodes_created_hydrated, 0);
+      assert.equal(successSummary.rejected_multi_signal, 0);
+      assert.equal(successSummary.rejected_provider_other, 0);
     }
   } finally {
     await server.close();
@@ -532,6 +539,31 @@ test('distill hydrates candidate raw capture via rollout_path_hint before provid
     const prompt = String((capturedBody as { input?: string }).input ?? '');
     assert.match(prompt, /hydrated_context/i);
     assert.match(prompt, /assistant reports verified outcome/i);
+
+    const runsDir = join(agentRoot, 'runs');
+    const runFiles = await readdir(runsDir);
+    let successSummary: null | Record<string, unknown> = null;
+    for (const file of runFiles) {
+      const summary = JSON.parse(await readFile(join(runsDir, file), 'utf8'));
+      if (
+        summary.distill_source === 'raw-capture'
+        && summary.status === 'success'
+        && summary.provider === 'responses-test'
+        && summary.scanned === 1
+        && summary.distilled === 1
+      ) {
+        successSummary = summary;
+      }
+    }
+    assert(successSummary);
+    if (successSummary) {
+      assert.equal(successSummary.hydration_attempted, 1);
+      assert.equal(successSummary.hydration_succeeded, 1);
+      assert.equal(successSummary.hydration_unavailable, 0);
+      assert.equal(successSummary.episodes_created_hydrated, 1);
+      assert.equal(successSummary.episodes_created_raw_only, 0);
+      assert.equal(successSummary.rejected_multi_signal, 0);
+    }
   } finally {
     await server.close();
   }
@@ -863,6 +895,30 @@ test('distill treats provider rejection as skipped output with no short-term wri
     const shortTermDir = join(sharedRoot, 'agents', 'research-agent', 'memory', 'short-term');
     const shortTermFiles = await readdir(shortTermDir);
     assert.equal(shortTermFiles.length, 0);
+
+    const runsDir = join(sharedRoot, 'agents', 'research-agent', 'runs');
+    const runFiles = await readdir(runsDir);
+    let successSummary: null | Record<string, unknown> = null;
+    for (const file of runFiles) {
+      const summary = JSON.parse(await readFile(join(runsDir, file), 'utf8'));
+      if (
+        summary.distill_source === 'raw-capture'
+        && summary.status === 'success'
+        && summary.provider === 'responses-test'
+        && summary.scanned === 1
+        && summary.distilled === 0
+      ) {
+        successSummary = summary;
+      }
+    }
+    assert(successSummary);
+    if (successSummary) {
+      assert.equal(successSummary.rejected_insufficient_context, 1);
+      assert.equal(successSummary.rejected_multi_signal, 0);
+      assert.equal(successSummary.rejected_provider_other, 0);
+      assert.equal(successSummary.episodes_created_hydrated, 0);
+      assert.equal(successSummary.episodes_created_raw_only, 0);
+    }
   } finally {
     await server.close();
   }
