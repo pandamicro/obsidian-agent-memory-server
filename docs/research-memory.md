@@ -4345,3 +4345,32 @@
   - 不在 Task 1 范围内顺手修复写失败保留问题，按计划放到 Task 2
 - 下一步:
   - 进入 Task 2，修复 raw-capture 写失败时仍清空 `pending_feedback` 的问题
+
+## R-0135 hooks 直写 raw_capture Task 2 验证
+
+- 日期: 2026-04-08
+- 目标: 修复 raw-capture 写失败时 `pending_feedback` 被错误清空的数据丢失路径
+- 输入:
+  - `scripts/codex-hooks/driver.ts`
+  - `scripts/codex-hooks/test/driver.test.ts`
+  - 提交: `70420d7`
+- 动作:
+  - 新增失败场景测试，模拟 raw-capture 写入失败
+  - 验证失败后：
+    - `pending_feedback` 仍保留在 session state
+    - hook 仍返回 `continue: true`
+  - 最小修复：只在 raw-capture 写入成功或本次无需 flush 时清空 `pending_feedback`
+  - 独立运行：
+    - `node --test --experimental-strip-types --test-name-pattern "Stop preserves pending feedback when raw-capture write fails" scripts/codex-hooks/test/driver.test.ts`
+    - `node --test --experimental-strip-types --test-name-pattern "Stop" scripts/codex-hooks/test/driver.test.ts scripts/codex-hooks/test/stop-contract.test.ts`
+  - 完成 spec review 与 code-quality review
+- 发现:
+  - 事实: 修复前，`Stop` 中 raw-capture 写失败后仍会清空 `pending_feedback`
+  - 事实: 修复后，失败路径会 fail-open 继续执行，但会保留 buffered feedback，避免静默丢数据
+  - 事实: 目标测试与 Stop 相关回归测试已通过
+  - 事实: 双评审均通过，未发现阻塞性问题
+- 决策:
+  - 接受 `70420d7` 作为 Task 2 的有效提交
+  - `last_flush_at` 在失败路径下的断言增强可后续补充，但当前不阻塞
+- 下一步:
+  - 进入 Task 3，补 hooks 直写 raw_capture 的 operator 文档与研究记录收尾
