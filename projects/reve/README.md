@@ -45,6 +45,7 @@ bin/reve drive --agent-id research-agent --limit 20 --batch-size 10
 如何排查 hydration 失败：
 
 - 先看 `hydration_attempted` 与 `hydration_unavailable` 的比例
+- 如果 `hydration_attempted=0` 且 `prefilter_rejected` 很高，通常表示本批 raw_capture 缺少结构化锚点（`session_id/thread_id/turn_id`）或没有可复用的 `assistant_summary/candidates`
 - 比例偏高时，检查同次 run 的 `last_item_error`、raw_capture 中的 `thread_id/turn_id/rollout_path_hint` 是否可用
 - `hydration_unavailable` 高但 `episodes_created_raw_only` 仍有产出，说明系统已按设计降级到 raw-only distill
 

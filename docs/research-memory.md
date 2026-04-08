@@ -4146,3 +4146,34 @@
   - `item_error_count` 目前只做观测，不触发自动 fail-fast
 - 下一步:
   - 进入 MVP3 Task 6，使用代表性 agent 数据进行真实 provider 验证并形成 checkpoint
+
+## R-0128 MVP3 Task 6 验证：代表性 agent 数据上的真实 distill 结果
+
+- 日期: 2026-04-08
+- 目标: 在隔离 shared root 上用真实 provider 验证 MVP3 distill 观测字段与 rejection 行为
+- 输入:
+  - agent 数据源: `research-agent`、`unity-optimization-agent`
+  - 复制范围: `identity/` + `memory/raw-capture/`（不复制 short-term/long-term）
+  - 命令:
+    - `./bin/reve distill --agent-id research-agent --limit 20`
+    - `./bin/reve distill --agent-id unity-optimization-agent --limit 20`
+- 动作:
+  - 构建临时隔离根目录：`/tmp/reve-mvp3-eval-jxvMNO/shared`
+  - 运行两次真实 `distill` 并读取 `runs/*.json` 摘要
+  - 抽样检查 raw_capture 内容与被拒绝原因的对应关系
+- 发现:
+  - 事实: 两次 distill 都成功完成，无命令级失败（`status=success`，`failure_reason=null`）
+  - 事实: `research-agent` 结果为 `scanned=5, distilled=0, skipped=5`，其中 `prefilter_rejected=4`，`rejected_insufficient_context=1`
+  - 事实: `unity-optimization-agent` 结果为 `scanned=8, distilled=0, skipped=8`，全部来自 `prefilter_rejected=8`
+  - 事实: 两个 agent 的 `hydration_attempted` 都为 0，说明本批样本没有进入 hydration 候选池
+  - 事实: 抽样 raw_capture 显示大量历史记录是 `source_kind=direct_input` 且 `session_id/thread_id/turn_id` 缺失；部分记录虽内嵌了 `[hook flush]` 文本，但未被结构化解析成 `assistant_summary/candidates`，因此按 MVP3 规则被当作低信号输入拒绝
+  - 事实: Task 5 新增统计字段在真实 run summary 中完整落盘，可直接解释 rejection-heavy 原因，而不需要再靠 short-term 文件倒推
+- 决策:
+  - 接受本轮“链路稳定 + 观测增强”验证通过
+  - 接受本轮“hydration 效果提升”尚无有效证据，原因是样本结构本身不足，不是 distill 运行失败
+  - 保持当前 rejection-first 策略，不为追求产出回退 prefilter 严格度
+- 假设:
+  - 假设: 只要 raw_capture 具备 `thread_id/turn_id` 或有效 `hook_flush` 结构字段，`hydration_attempted` 与 `episodes_created_hydrated` 会上升
+  - 该假设尚未在真实代表性数据上被证实，需要后续采集批次提供结构化锚点样本
+- 下一步:
+  - 在采集侧优先提升结构化 raw_capture 覆盖（尤其把“文本化 hook flush”转为结构字段），再重复 Task 6 验证以观察 hydration 指标变化
