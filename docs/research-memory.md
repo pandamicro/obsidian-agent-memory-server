@@ -4177,3 +4177,35 @@
   - 该假设尚未在真实代表性数据上被证实，需要后续采集批次提供结构化锚点样本
 - 下一步:
   - 在采集侧优先提升结构化 raw_capture 覆盖（尤其把“文本化 hook flush”转为结构字段），再重复 Task 6 验证以观察 hydration 指标变化
+
+## R-0129 MVP3 收口复核：Task 5 审查通过与 Task 6 独立重跑确认
+
+- 日期: 2026-04-08
+- 目标: 对 Task 5 / Task 6 的提交结果做主线程独立复核，避免仅依赖 worker 自报结果
+- 输入:
+  - 提交: `ae560a9`, `bc5ea64`
+  - 评审结论: Task 5 spec review / code-quality review
+  - 真实验证环境: 新建隔离根目录 `/tmp/reve-mvp3-verify2-tO3Cvo/shared`
+- 动作:
+  - 主线程重新运行 `npm --prefix projects/reve test`
+  - 独立审查 `ae560a9` 的代码、测试与 README 变更
+  - 使用隔离 shared root 重跑：
+    - `OBSIDIAN_AGENT_MEMORY_SERVER_SHARED_ROOT=... ./bin/reve distill --agent-id research-agent --limit 20`
+    - `OBSIDIAN_AGENT_MEMORY_SERVER_SHARED_ROOT=... ./bin/reve distill --agent-id unity-optimization-agent --limit 20`
+  - 对第一次隔离拷贝失误导致的无效 `skipped` 结果做纠偏，按正确目录结构重跑
+- 发现:
+  - 事实: `projects/reve` 当前全量测试通过，结果为 `28/28`
+  - 事实: Task 5 spec review 结论为 `APPROVED`，未发现需求覆盖缺口
+  - 事实: Task 5 code-quality review 结论为 `APPROVED`，仅指出 rejection 分类启发式较脆弱、stdout 未单独测试等非阻塞问题
+  - 事实: 第一次主线程重跑 Task 6 时，因为隔离目录中的 `memory/raw-capture` 布局构造错误，拿到 `no_pending_raw_captures`；该结果无效，不能用于产品判断
+  - 事实: 修正隔离目录结构后，主线程独立重跑得到的 `research-agent` 与 `unity-optimization-agent` 统计结果与 `R-0128` 一致
+  - 事实: 两个 agent 的独立重跑都仍然是 `hydration_attempted=0`，说明当前代表性样本仍不足以验证 hydration 带来的 episode 质量提升
+- 决策:
+  - 接受 `ae560a9` 作为 Task 5 的有效提交
+  - 接受 `bc5ea64` 的 Task 6 结论，但仅限于“链路稳定、观测字段有效、当前样本 hydration 未触发”
+  - 明确将第一次 `skipped` 结果标记为操作失误产生的无效样本，不纳入设计结论
+- 未解问题:
+  - rejection 分类当前仍是轻量启发式，不适合作为长期精细趋势指标
+  - 真实样本仍缺结构化锚点，MVP3 还不能证明 hydration 能提高 episode 产出质量
+- 下一步:
+  - 将后续重点转到 raw_capture 结构化覆盖率提升，再用新的带锚点批次重复 Task 6
