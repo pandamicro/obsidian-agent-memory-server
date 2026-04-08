@@ -59,6 +59,13 @@ Optional stop-triggered distill:
 - optional timeout env: `OBSIDIAN_AGENT_MEMORY_SERVER_HOOKS_REVE_TIMEOUT_MS`
 - optional limit env: `OBSIDIAN_AGENT_MEMORY_SERVER_HOOKS_STOP_DISTILL_LIMIT` (default `20`)
 
+Stop raw-capture behavior (MVP3 baseline):
+
+- `Stop` now writes one stop-aggregated `raw_capture` record directly from hooks runtime.
+- `pending_feedback` is cleared only after the raw-capture write succeeds.
+- if write fails, hook keeps `pending_feedback` for retry on next `Stop` (fail-open without dropping data).
+- `projects/cli run` remains as compatibility/manual path; hooks direct write is the primary collection path.
+
 Derived signals toggle (MVP placeholder):
 
 - env: `OBSIDIAN_AGENT_MEMORY_SERVER_HOOK_DERIVED_SIGNALS`
@@ -71,4 +78,4 @@ Current implementation status:
 - Partial: Hook envelope contract is implemented, but derived event production remains disabled by default
 - Planned: derived signal generation and confidence-driven side effects
 
-The runtime is intentionally thin. Hooks decide when to refresh memory and write `raw-capture`; `bin/reve distill` is responsible for model-filtered `short-term` generation.
+The runtime is intentionally thin. Hooks directly persist stop-aggregated `raw_capture`; `projects/reve` (`distill`) is responsible for model-filtered `short-term` generation.
