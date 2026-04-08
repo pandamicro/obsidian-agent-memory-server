@@ -69,6 +69,14 @@ type DistilledShortTerm = {
   parser_reason: string;
 };
 
+type DistillationStatus = 'episode_created' | string;
+
+type DistillationModelResponse = {
+  status: DistillationStatus;
+  reason: string;
+  episode: DistilledShortTerm | null;
+};
+
 type DistillPrefilterDecision =
   | { decision: 'reject'; reason: 'low_signal' | 'missing_anchor' }
   | { decision: 'candidate'; hydration: 'raw_only' | 'needs_hydration' };
@@ -556,6 +564,95 @@ function isBoolean(value: unknown): value is boolean {
   return typeof value === 'boolean';
 }
 
+function isValidPolarity(value: unknown): value is ShortTermSignalPolarity {
+  return value === 'supporting' || value === 'conflicting' || value === 'insufficient';
+}
+
+function validateDistilledShortTerm(value: unknown): DistilledShortTerm {
+  if (!value || typeof value !== 'object') {
+    throw new Error('Distill episode must be an object');
+  }
+
+  const typed = value as Partial<DistilledShortTerm>;
+  if (typed.event_type !== 'captured') {
+    throw new Error(`Distill episode.event_type must be captured, got ${String(typed.event_type ?? '<missing>')}`);
+  }
+  if (typed.object_kind !== 'episode') {
+    throw new Error(`Distill episode.object_kind must be episode, got ${String(typed.object_kind ?? '<missing>')}`);
+  }
+  if (typeof typed.signal_type !== 'string' || !typed.signal_type.trim()) {
+    throw new Error('Distill episode.signal_type must be a non-empty string');
+  }
+  if (!isValidPolarity(typed.polarity)) {
+    throw new Error(`Distill episode.polarity is invalid: ${String(typed.polarity ?? '<missing>')}`);
+  }
+  if (typeof typed.summary !== 'string') {
+    throw new Error('Distill episode.summary must be a string');
+  }
+  if (!isStringArray(typed.evidence_refs)) {
+    throw new Error('Distill episode.evidence_refs must be a string array');
+  }
+  if (typeof typed.confidence !== 'number' || !Number.isFinite(typed.confidence)) {
+    throw new Error('Distill episode.confidence must be a finite number');
+  }
+  if (typeof typed.parser_reason !== 'string') {
+    throw new Error('Distill episode.parser_reason must be a string');
+  }
+  if (!typed.quality || typeof typed.quality !== 'object') {
+    throw new Error('Distill episode.quality must be an object');
+  }
+
+  const quality = typed.quality as Partial<DistilledShortTerm['quality']>;
+  if (!isBoolean(quality.observable)) {
+    throw new Error('Distill episode.quality.observable must be a boolean');
+  }
+  if (!isBoolean(quality.linkable)) {
+    throw new Error('Distill episode.quality.linkable must be a boolean');
+  }
+  if (!isBoolean(quality.evaluatable)) {
+    throw new Error('Distill episode.quality.evaluatable must be a boolean');
+  }
+  if (!isBoolean(quality.distillable)) {
+    throw new Error('Distill episode.quality.distillable must be a boolean');
+  }
+  if (!quality.status || !QUALITY_STATUSES.has(quality.status)) {
+    throw new Error(`Distill episode.quality.status is invalid: ${String(quality.status ?? '<missing>')}`);
+  }
+  if (!isStringArray(quality.reasons)) {
+    throw new Error('Distill episode.quality.reasons must be a string array');
+  }
+
+  return typed as DistilledShortTerm;
+}
+
+function validateDistillationModelResponse(value: unknown): DistillationModelResponse {
+  if (!value || typeof value !== 'object') {
+    throw new Error('Distill response must be an object');
+  }
+
+  const response = value as Partial<DistillationModelResponse>;
+  if (typeof response.status !== 'string' || !response.status.trim()) {
+    throw new Error('Distill response.status must be a non-empty string');
+  }
+  if (typeof response.reason !== 'string') {
+    throw new Error('Distill response.reason must be a string');
+  }
+
+  if (response.status !== 'episode_created') {
+    return {
+      status: response.status,
+      reason: response.reason,
+      episode: null,
+    };
+  }
+
+  return {
+    status: response.status,
+    reason: response.reason,
+    episode: validateDistilledShortTerm(response.episode),
+  };
+}
+
 function validateConsolidationModelResponse(value: unknown): ConsolidationModelResponse {
   if (!value || typeof value !== 'object') {
     throw new Error('Consolidation response must be an object');
@@ -696,12 +793,14 @@ async function distillWithResponsesApi(raw: RawCaptureEvent, runtime: ModelProvi
 
   const prompt = [
     'You are a short-term memory filter for agentic systems.',
-    'Return strict JSON only with keys: event_type, object_kind, signal_type, polarity, summary, evidence_refs, quality, confidence, parser_reason.',
+    'Default to rejection unless evidence is specific, observable, and reusable.',
+    'Most raw_capture records should be rejected when context is weak, generic, or not grounded in verifiable evidence.',
+    'Return strict JSON only with keys: status, reason, episode.',
     'Rules:',
-    '- event_type must be captured',
-    '- object_kind must be episode',
-    '- polarity in supporting/conflicting/insufficient',
-    '- quality.status in pass/needs_review/rejected',
+    '- status must be episode_created or a rejection status (for example rejected_insufficient_context)',
+    '- reason must explain the decision',
+    '- episode must be null for rejection statuses',
+    '- only produce episode_created when evidence is concrete and actionable',
     '- no markdown',
     `raw_capture=${JSON.stringify(raw)}`,
   ].join('\n');
@@ -720,46 +819,95 @@ async function distillWithResponsesApi(raw: RawCaptureEvent, runtime: ModelProvi
           type: 'object',
           additionalProperties: false,
           properties: {
-            event_type: { type: 'string' },
-            object_kind: { type: 'string' },
-            signal_type: { type: 'string' },
-            polarity: { type: 'string' },
-            summary: { type: 'string' },
-            evidence_refs: { type: 'array', items: { type: 'string' } },
-            quality: {
-              type: 'object',
-              additionalProperties: false,
-              properties: {
-                observable: { type: 'boolean' },
-                linkable: { type: 'boolean' },
-                evaluatable: { type: 'boolean' },
-                distillable: { type: 'boolean' },
-                status: { type: 'string' },
-                reasons: { type: 'array', items: { type: 'string' } },
-              },
-              required: ['observable', 'linkable', 'evaluatable', 'distillable', 'status', 'reasons'],
+            status: { type: 'string' },
+            reason: { type: 'string' },
+            episode: {
+              anyOf: [
+                {
+                  type: 'object',
+                  additionalProperties: false,
+                  properties: {
+                    event_type: { type: 'string' },
+                    object_kind: { type: 'string' },
+                    signal_type: { type: 'string' },
+                    polarity: { type: 'string' },
+                    summary: { type: 'string' },
+                    evidence_refs: { type: 'array', items: { type: 'string' } },
+                    quality: {
+                      type: 'object',
+                      additionalProperties: false,
+                      properties: {
+                        observable: { type: 'boolean' },
+                        linkable: { type: 'boolean' },
+                        evaluatable: { type: 'boolean' },
+                        distillable: { type: 'boolean' },
+                        status: { type: 'string' },
+                        reasons: { type: 'array', items: { type: 'string' } },
+                      },
+                      required: ['observable', 'linkable', 'evaluatable', 'distillable', 'status', 'reasons'],
+                    },
+                    confidence: { type: 'number' },
+                    parser_reason: { type: 'string' },
+                  },
+                  required: [
+                    'event_type',
+                    'object_kind',
+                    'signal_type',
+                    'polarity',
+                    'summary',
+                    'evidence_refs',
+                    'quality',
+                    'confidence',
+                    'parser_reason',
+                  ],
+                },
+                { type: 'null' },
+              ],
             },
-            confidence: { type: 'number' },
-            parser_reason: { type: 'string' },
           },
-          required: [
-            'event_type',
-            'object_kind',
-            'signal_type',
-            'polarity',
-            'summary',
-            'evidence_refs',
-            'quality',
-            'confidence',
-            'parser_reason',
-          ],
+          required: ['status', 'reason', 'episode'],
         },
       },
     },
   } satisfies Record<string, unknown>;
 
   const outputText = await requestResponsesOutputText(endpoint, headers, requestBody, 'distill', runtime);
-  return JSON.parse(outputText) as DistilledShortTerm;
+  const parsed = JSON.parse(outputText) as unknown;
+
+  // Backward compatibility for providers still emitting the old episode-only schema.
+  if (
+    parsed
+    && typeof parsed === 'object'
+    && 'event_type' in parsed
+    && 'object_kind' in parsed
+  ) {
+    return validateDistilledShortTerm(parsed);
+  }
+
+  const response = validateDistillationModelResponse(parsed);
+  if (response.status === 'episode_created') {
+    return response.episode!;
+  }
+
+  const reason = response.reason.trim() || response.status;
+  return {
+    event_type: 'captured',
+    object_kind: 'episode',
+    signal_type: 'insufficient_context',
+    polarity: 'insufficient',
+    summary: reason,
+    evidence_refs: raw.evidence_refs,
+    quality: {
+      observable: false,
+      linkable: false,
+      evaluatable: false,
+      distillable: false,
+      status: 'rejected',
+      reasons: [reason],
+    },
+    confidence: 0,
+    parser_reason: `provider:${response.status}`,
+  };
 }
 
 async function distillWithMock(raw: RawCaptureEvent): Promise<DistilledShortTerm> {

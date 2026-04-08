@@ -4076,3 +4076,37 @@
   - `rejected_missing_anchor` 统计字段当前仍接近占位状态
 - 下一步:
   - 进入 MVP3 Task 4，收紧 distill prompt 与输出 schema
+
+## R-0126 MVP3 Task 4 验证：保守蒸馏契约与 rejection-first 输出
+
+- 日期: 2026-04-08
+- 目标: 收紧 `reve distill` 的 provider prompt 与返回 schema，明确把“拒绝生成 episode”作为默认正确结果
+- 输入:
+  - `projects/reve/src/cli.ts`
+  - `projects/reve/test/reve.test.ts`
+  - `docs/plans/2026-04-08-reve-mvp3-episode-quality-implementation-plan.md`
+  - Task 4 spec review 与 code-quality review 结论
+- 动作:
+  - 将 distill prompt 改为 rejection-first，明确要求大多数弱上下文 `raw_capture` 应被拒绝
+  - 将 provider 返回契约收紧为顶层 `status / reason / episode`
+  - 为 `episode` 增加 `null` 分支，允许 provider 在 rejection 情况下不返回 episode
+  - 为旧的“episode-only” provider 输出保留临时 backward-compat 解析分支
+  - 新增回归测试，验证 request body 中的 prompt/schema 形状
+  - 新增回归测试，验证 provider 返回 rejection 时不会写入 short-term
+  - 运行 `npm --prefix projects/reve test`
+- 发现:
+  - 事实: 修改前，distill prompt 仍倾向于要求 provider 产出 episode，对“拒绝也是正确结果”的约束不够强
+  - 事实: 修改后，provider 请求体已显式要求 `status / reason / episode`，且 `episode` 允许为 `null`
+  - 事实: 修改后，当 provider 返回 `rejected_*` 且 `episode=null` 时，distill 命令会跳过 short-term 写入
+  - 事实: 为兼容旧 provider 输出，当前仍保留“顶层直接是 episode 对象”的兼容解析分支
+  - 事实: `projects/reve` 全量测试通过，当前结果为 `28/28`
+- 决策:
+  - 接受 Task 4 以“保守拒绝优先”作为 distill prompt 的默认策略
+  - 接受在当前阶段保留旧 episode-only schema 的兼容分支，后续再视 provider 稳定性收紧
+  - 接受 provider rejection 通过“跳过 short-term 写入”表达，而不是落一条 rejected episode 文件
+- 未解问题:
+  - 当前 `status` 校验仍较宽松，provider 拼写错误可能被当作 rejection 吞掉
+  - backward-compat 分支仍可能误接收形状混杂的错误对象
+  - provider 连续返回非法 JSON / 非法 schema 时，当前只会累加 `item_error_count`，不会整体 fail run
+- 下一步:
+  - 进入 MVP3 Task 5，补齐 distill run summary 的可观测性与 operator 文档

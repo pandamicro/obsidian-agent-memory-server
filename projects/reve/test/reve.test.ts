@@ -739,6 +739,135 @@ test('distill provider/model can be resolved from ~/.codex/config.toml', async (
   assert.equal(shortTerm.model_name, 'mock-model-from-config');
 });
 
+test('distill sends conservative schema with required reason and nullable episode', async () => {
+  const workspaceRoot = await mkdtemp(join(tmpdir(), 'agent-reve-distill-schema-'));
+  const sharedRoot = await mkdtemp(join(tmpdir(), 'agent-reve-distill-schema-shared-'));
+  const sharedEnv = {
+    OBSIDIAN_AGENT_MEMORY_SERVER_SHARED_ROOT: sharedRoot,
+  };
+  assert.equal((await runLauncher(['init', '--agent-id', 'research-agent'], workspaceRoot, sharedEnv)).code, 0);
+
+  assert.equal(
+    (
+      await runLauncher(
+        [
+          'run',
+          '--agent-id',
+          'research-agent',
+          '--input',
+          '[hook flush] session=s1\nassistant=done\ncandidates:\n- environmental_outcome/supporting: Bash ok [turn:t1]',
+        ],
+        workspaceRoot,
+        sharedEnv,
+      )
+    ).code,
+    0,
+  );
+
+  let capturedBody: Record<string, unknown> | null = null;
+  const server = await startResponsesTestServer([
+    JSON.stringify({
+      status: 'episode_created',
+      reason: 'hydrated evidence is specific enough',
+      episode: {
+        event_type: 'captured',
+        object_kind: 'episode',
+        signal_type: 'environmental_outcome',
+        polarity: 'supporting',
+        summary: 'Bash ok',
+        evidence_refs: ['turn:t1'],
+        quality: {
+          observable: true,
+          linkable: true,
+          evaluatable: true,
+          distillable: true,
+          status: 'pass',
+          reasons: [],
+        },
+        confidence: 0.8,
+        parser_reason: 'schema-test',
+      },
+    }),
+  ], (body) => {
+    capturedBody = body;
+  });
+
+  try {
+    const fakeHome = await writeDistillResponsesConfig(server.baseUrl);
+    const distillResult = await runReve(
+      ['distill', '--agent-id', 'research-agent', '--limit', '10'],
+      workspaceRoot,
+      { ...sharedEnv, HOME: fakeHome },
+    );
+    assert.equal(distillResult.code, 0);
+    assert(capturedBody);
+
+    const prompt = String((capturedBody as { input?: string }).input ?? '');
+    assert.match(prompt, /most raw_capture records should be rejected/i);
+
+    const text = (capturedBody as { text?: { format?: { schema?: Record<string, unknown> } } }).text;
+    const schema = text?.format?.schema as { required?: string[]; properties?: Record<string, unknown> };
+    assert.deepEqual(schema.required, ['status', 'reason', 'episode']);
+
+    const episodeProperty = schema.properties?.episode as { anyOf?: Array<Record<string, unknown>> };
+    assert(Array.isArray(episodeProperty.anyOf));
+    assert(episodeProperty.anyOf?.some((entry) => entry.type === 'null'));
+  } finally {
+    await server.close();
+  }
+});
+
+test('distill treats provider rejection as skipped output with no short-term write', async () => {
+  const workspaceRoot = await mkdtemp(join(tmpdir(), 'agent-reve-distill-rejected-'));
+  const sharedRoot = await mkdtemp(join(tmpdir(), 'agent-reve-distill-rejected-shared-'));
+  const sharedEnv = {
+    OBSIDIAN_AGENT_MEMORY_SERVER_SHARED_ROOT: sharedRoot,
+  };
+  assert.equal((await runLauncher(['init', '--agent-id', 'research-agent'], workspaceRoot, sharedEnv)).code, 0);
+
+  assert.equal(
+    (
+      await runLauncher(
+        [
+          'run',
+          '--agent-id',
+          'research-agent',
+          '--input',
+          '[hook flush] session=s2\nassistant=done\ncandidates:\n- environmental_outcome/supporting: Bash ok [turn:t2]',
+        ],
+        workspaceRoot,
+        sharedEnv,
+      )
+    ).code,
+    0,
+  );
+
+  const server = await startResponsesTestServer([
+    JSON.stringify({
+      status: 'rejected_insufficient_context',
+      reason: 'context is too weak to justify an episode',
+      episode: null,
+    }),
+  ]);
+
+  try {
+    const fakeHome = await writeDistillResponsesConfig(server.baseUrl);
+    const distillResult = await runReve(
+      ['distill', '--agent-id', 'research-agent', '--limit', '10'],
+      workspaceRoot,
+      { ...sharedEnv, HOME: fakeHome },
+    );
+    assert.equal(distillResult.code, 0);
+    assert.match(distillResult.stdout, /Distilled short-term records: 0/);
+
+    const shortTermDir = join(sharedRoot, 'agents', 'research-agent', 'memory', 'short-term');
+    const shortTermFiles = await readdir(shortTermDir);
+    assert.equal(shortTermFiles.length, 0);
+  } finally {
+    await server.close();
+  }
+});
+
 test('consolidate builds a long-term learning record from short-term episodes', async () => {
   const workspaceRoot = await mkdtemp(join(tmpdir(), 'agent-reve-consolidate-'));
   const sharedRoot = await mkdtemp(join(tmpdir(), 'agent-reve-consolidate-shared-'));
