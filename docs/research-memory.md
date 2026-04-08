@@ -4291,3 +4291,27 @@
   - 需要确认上游 Codex hook 输入在真实环境中 `thread_id` 的稳定性，当前合同支持但是否总能拿到仍待真实批次验证
 - 下一步:
   - 优先补 hooks -> raw_capture 的真正 flush 路径，再重新观察新样本质量
+
+## R-0133 hooks 直写 raw_capture 设计决策
+
+- 日期: 2026-04-08
+- 目标: 确定修复当前 hooks 采集链路缺口的第一实现路径
+- 输入:
+  - `R-0132` 的链路检查结论
+  - 用户明确偏好：“hooks 直接写入 raw_capture 保障链路稳定性”
+- 动作:
+  - 对比 `Stop 聚合直写`、`逐事件直写`、`双写`
+  - 以当前 `pending_feedback` 设计为约束收敛最小实现
+- 决策:
+  - 选择 `Stop 聚合直写 raw_capture`
+  - 保留 `PreToolUse/PostToolUse` 继续累积 `pending_feedback`
+  - 仅在 `Stop` 时把 assistant summary + pending feedback 聚合成一条结构化 `raw_capture`
+  - 写入成功后才清空 `pending_feedback`
+  - `projects/cli run` 继续保留为手工/测试入口，但不再作为 hooks 主路径的落盘依赖
+- 原因:
+  - 与现有 state 设计最一致
+  - 能最小代价闭合 hooks -> raw_capture 链路
+  - 相比逐事件写入，能减少碎片和重复候选
+  - 相比“文本 hook flush + 外部解析”，直写更稳定、可控
+- 下一步:
+  - 写 failing tests，按 TDD 实现 hooks-side raw-capture writer
