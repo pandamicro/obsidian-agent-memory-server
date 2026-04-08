@@ -4233,3 +4233,28 @@
   - 后续优先修复“文本化 hook flush 没被结构化落盘”的采集路径，而不是放松 prefilter
 - 下一步:
   - 优先检查 `unity-optimization-agent` 相关 hooks / launcher 路径，为什么 `[hook flush]` 文本没有进入 `assistant_summary / candidates / session_id`
+
+## R-0131 清理低质量 raw_capture
+
+- 日期: 2026-04-08
+- 目标: 删除所有已确认不满足当前 MVP3 最低质量要求、未来不可直接用于 episode 蒸馏的 `raw_capture`
+- 输入:
+  - `agents/*/memory/raw-capture/*.json`
+  - MVP3 当前最低门槛：`source_kind=direct_input` 且同时缺失 `assistant_summary`、`candidates`、`session_id/thread_id/turn_id`
+- 动作:
+  - 对全部 agent 的 `raw_capture` 做结构扫描
+  - 按上述客观条件枚举删除候选
+  - 执行批量删除，仅保留仍具备蒸馏潜力的记录
+- 发现:
+  - 事实: 当前仓库共有 `61` 条 `raw_capture`
+  - 事实: 其中 `60` 条命中删除条件，`1` 条保留
+  - 事实: 按 agent 分布：
+    - `agentic-memory-expert`: `48/48` 删除
+    - `research-agent`: `4/5` 删除
+    - `unity-optimization-agent`: `8/8` 删除
+  - 事实: 高比例删除的主要原因不是内容主题，而是结构层缺失 `assistant_summary/candidates/session-thread-turn anchors`
+- 决策:
+  - 接受当前删除标准直接对低质量 `raw_capture` 做清理
+  - 保留唯一未命中删除条件的 `research-agent` 记录，避免误删现阶段仍可用于后续蒸馏验证的样本
+- 下一步:
+  - 后续应优先提升采集结构化质量，再重新积累新的 `raw_capture`
