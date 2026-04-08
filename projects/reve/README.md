@@ -6,13 +6,21 @@ MVP 当前提供：
 
 - `distill`: 从 `raw-capture` 读取候选，过滤后写入 `short-term`
 - `consolidate`: 从 `short-term` episode 批次形成 `Learning`，写入 `long-term`
+- `drive`: 串行执行 `distill` + `consolidate`，并写入一条聚合 run summary
 
 调用入口：
 
 ```bash
 bin/reve distill --agent-id research-agent --limit 20
 bin/reve consolidate --agent-id research-agent --limit 20 --batch-size 10
+bin/reve drive --agent-id research-agent --limit 20 --batch-size 10
 ```
+
+推荐手工评估流程：
+
+1. 先检查 `Episode`（`short-term`）内容质量与可追溯性
+2. 再检查 `Learning`（`long-term`）是否正确归纳 episode 批次
+3. 回归测试场景优先用 `drive` 一次跑完整链路
 
 `bin/reve` 会在启动时自动加载仓库根目录的 `.env.agent-memory`。
 如需自定义路径，可设置 `OBSIDIAN_AGENT_MEMORY_SERVER_ENV_FILE`。

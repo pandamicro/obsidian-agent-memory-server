@@ -10,6 +10,7 @@ import test from 'node:test';
 
 const revePath = resolve(fileURLToPath(new URL('../src/cli.ts', import.meta.url)));
 const launcherPath = resolve(fileURLToPath(new URL('../../../bin/agents', import.meta.url)));
+const reveBinPath = resolve(fileURLToPath(new URL('../../../bin/reve', import.meta.url)));
 
 async function runReve(args: string[], cwd: string, env: NodeJS.ProcessEnv = {}) {
   return new Promise<{ code: number | null; stdout: string; stderr: string }>((resolvePromise) => {
@@ -39,6 +40,31 @@ async function runReve(args: string[], cwd: string, env: NodeJS.ProcessEnv = {})
 async function runLauncher(args: string[], cwd: string, env: NodeJS.ProcessEnv = {}) {
   return new Promise<{ code: number | null; stdout: string; stderr: string }>((resolvePromise) => {
     const child = spawn(launcherPath, args, {
+      cwd,
+      env: { ...process.env, ...env },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+
+    let stdout = '';
+    let stderr = '';
+
+    child.stdout.on('data', (chunk) => {
+      stdout += String(chunk);
+    });
+
+    child.stderr.on('data', (chunk) => {
+      stderr += String(chunk);
+    });
+
+    child.on('close', (code) => {
+      resolvePromise({ code, stdout, stderr });
+    });
+  });
+}
+
+async function runReveBin(args: string[], cwd: string, env: NodeJS.ProcessEnv = {}) {
+  return new Promise<{ code: number | null; stdout: string; stderr: string }>((resolvePromise) => {
+    const child = spawn(reveBinPath, args, {
       cwd,
       env: { ...process.env, ...env },
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -1150,4 +1176,115 @@ test('consolidate no_learning batches can be retried once new evidence arrives',
 
   const longTermFilesAfterRetry = await readdir(longTermDir);
   assert.equal(longTermFilesAfterRetry.length, 1);
+});
+
+test('drive orchestrates distill and consolidate end-to-end with idempotent reruns', async () => {
+  const workspaceRoot = await mkdtemp(join(tmpdir(), 'agent-reve-drive-e2e-'));
+  const sharedRoot = await mkdtemp(join(tmpdir(), 'agent-reve-drive-e2e-shared-'));
+  const sharedEnv = {
+    OBSIDIAN_AGENT_MEMORY_SERVER_SHARED_ROOT: sharedRoot,
+  };
+  const driveEnv = {
+    ...sharedEnv,
+    OBSIDIAN_AGENT_MEMORY_SERVER_DISTILL_PROVIDER: 'mock',
+    OBSIDIAN_AGENT_MEMORY_SERVER_CONSOLIDATE_PROVIDER: 'mock',
+    OBSIDIAN_AGENT_MEMORY_SERVER_CONSOLIDATE_MODEL: 'gpt-5.2',
+  };
+
+  assert.equal((await runLauncher(['init', '--agent-id', 'research-agent'], workspaceRoot, sharedEnv)).code, 0);
+
+  const agentRoot = join(sharedRoot, 'agents', 'research-agent');
+  const rawCaptureDir = join(agentRoot, 'memory', 'raw-capture');
+  await mkdir(rawCaptureDir, { recursive: true });
+
+  const rawCaptures = [
+    {
+      schema_version: '1',
+      message_id: 'drive-raw-1',
+      identity_id: 'research-agent',
+      object_kind: 'raw_capture',
+      object_ref: 'raw_capture:drive-raw-1',
+      event_type: 'captured',
+      evidence_refs: ['turn:drive-1'],
+      observed_at: '2026-04-08T01:00:00.000Z',
+      source_kind: 'hook_flush',
+      session_id: 'drive-session',
+      workspace_root: workspaceRoot,
+      assistant_summary: 'episode one',
+      candidates: [
+        {
+          signal_type: 'environmental_outcome',
+          polarity: 'supporting',
+          summary: 'first signal',
+          evidence_refs: ['turn:drive-1'],
+        },
+      ],
+      input: 'raw capture one',
+    },
+    {
+      schema_version: '1',
+      message_id: 'drive-raw-2',
+      identity_id: 'research-agent',
+      object_kind: 'raw_capture',
+      object_ref: 'raw_capture:drive-raw-2',
+      event_type: 'captured',
+      evidence_refs: ['turn:drive-2'],
+      observed_at: '2026-04-08T01:01:00.000Z',
+      source_kind: 'hook_flush',
+      session_id: 'drive-session',
+      workspace_root: workspaceRoot,
+      assistant_summary: 'episode two',
+      candidates: [
+        {
+          signal_type: 'environmental_outcome',
+          polarity: 'supporting',
+          summary: 'second signal',
+          evidence_refs: ['turn:drive-2'],
+        },
+      ],
+      input: 'raw capture two',
+    },
+  ];
+
+  for (const capture of rawCaptures) {
+    await writeFile(join(rawCaptureDir, `${capture.message_id}.json`), `${JSON.stringify(capture, null, 2)}\n`, 'utf8');
+  }
+
+  const firstDrive = await runReveBin(
+    ['drive', '--agent-id', 'research-agent', '--limit', '10', '--batch-size', '5'],
+    workspaceRoot,
+    driveEnv,
+  );
+  assert.equal(firstDrive.code, 0);
+
+  const shortTermDir = join(agentRoot, 'memory', 'short-term');
+  const longTermDir = join(agentRoot, 'memory', 'long-term');
+  const runsDir = join(agentRoot, 'runs');
+  const firstEpisodeFiles = await readdir(shortTermDir);
+  const firstLearningFiles = await readdir(longTermDir);
+  assert(firstEpisodeFiles.length > 0);
+  assert(firstLearningFiles.length > 0);
+
+  const firstRunFiles = await readdir(runsDir);
+  const firstDriveSummaries: Array<Record<string, unknown>> = [];
+  for (const file of firstRunFiles) {
+    const summary = JSON.parse(await readFile(join(runsDir, file), 'utf8'));
+    if (summary.command === 'drive') {
+      firstDriveSummaries.push(summary);
+    }
+  }
+  assert.equal(firstDriveSummaries.length, 1);
+  assert.equal(firstDriveSummaries[0]?.status, 'success');
+
+  const secondDrive = await runReveBin(
+    ['drive', '--agent-id', 'research-agent', '--limit', '10', '--batch-size', '5'],
+    workspaceRoot,
+    driveEnv,
+  );
+  assert.equal(secondDrive.code, 0);
+
+  const secondEpisodeFiles = await readdir(shortTermDir);
+  const secondLearningFiles = await readdir(longTermDir);
+  assert.equal(secondEpisodeFiles.length, firstEpisodeFiles.length);
+  assert.equal(secondLearningFiles.length, firstLearningFiles.length);
 });

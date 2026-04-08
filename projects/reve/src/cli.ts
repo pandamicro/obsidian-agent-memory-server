@@ -137,7 +137,24 @@ const QUALITY_STATUSES: ReadonlySet<DistilledShortTerm['quality']['status']> = n
 ]);
 
 type RunStatus = 'success' | 'failed' | 'skipped';
-type CommandName = 'distill' | 'consolidate';
+type CommandName = 'distill' | 'consolidate' | 'drive';
+
+type DistillCommandResult = {
+  runId: string;
+  status: RunStatus;
+  scanned: number;
+  distilledCount: number;
+  skippedCount: number;
+};
+
+type ConsolidateCommandResult = {
+  runId: string;
+  status: RunStatus;
+  episodesScanned: number;
+  batchesScanned: number;
+  learningRecords: number;
+  statusCounts: Record<ConsolidationStatus, number>;
+};
 
 function sanitizeForFilename(value: string) {
   return value.replaceAll(':', '-');
@@ -1050,7 +1067,7 @@ async function readExistingLearningFingerprints(longTermDir: string, agentId: st
   return fingerprints;
 }
 
-async function handleDistill(agentId: string, limitRaw: string | undefined, rootDir: string) {
+async function handleDistill(agentId: string, limitRaw: string | undefined, rootDir: string): Promise<DistillCommandResult> {
   const agentRoot = join(rootDir, 'agents', agentId);
   const rawCaptureDir = join(agentRoot, 'memory', 'raw-capture');
   const shortTermDir = join(agentRoot, 'memory', 'short-term');
@@ -1085,7 +1102,7 @@ async function handleDistill(agentId: string, limitRaw: string | undefined, root
       if (scanned === 0) {
         status = 'skipped';
         skipReason = 'no_pending_raw_captures';
-        return { status, distilledCount, skippedCount };
+        return { runId, status, scanned, distilledCount, skippedCount };
       }
 
       for (const item of pending) {
@@ -1128,7 +1145,7 @@ async function handleDistill(agentId: string, limitRaw: string | undefined, root
         }
       }
 
-      return { status, distilledCount, skippedCount };
+      return { runId, status, scanned, distilledCount, skippedCount };
     } catch (error) {
       status = 'failed';
       failureReason = error instanceof Error ? error.message : String(error);
@@ -1161,9 +1178,16 @@ async function handleDistill(agentId: string, limitRaw: string | undefined, root
   } else if (runResult.status === 'skipped') {
     console.log('No pending raw captures to distill; skipping.');
   }
+
+  return runResult;
 }
 
-async function handleConsolidate(agentId: string, limitRaw: string | undefined, batchSizeRaw: string | undefined, rootDir: string) {
+async function handleConsolidate(
+  agentId: string,
+  limitRaw: string | undefined,
+  batchSizeRaw: string | undefined,
+  rootDir: string,
+): Promise<ConsolidateCommandResult> {
   const agentRoot = join(rootDir, 'agents', agentId);
   const shortTermDir = join(agentRoot, 'memory', 'short-term');
   const longTermDir = join(agentRoot, 'memory', 'long-term');
@@ -1221,6 +1245,7 @@ async function handleConsolidate(agentId: string, limitRaw: string | undefined, 
         status = 'skipped';
         skipReason = 'no_valid_episodes';
         return {
+          runId,
           status,
           learningRecords,
           episodesScanned,
@@ -1286,6 +1311,7 @@ async function handleConsolidate(agentId: string, limitRaw: string | undefined, 
       statusCounts.learning_created = learningRecords;
 
       return {
+        runId,
         status,
         learningRecords,
         episodesScanned,
@@ -1330,6 +1356,71 @@ async function handleConsolidate(agentId: string, limitRaw: string | undefined, 
   } else if (runResult.status === 'skipped') {
     console.log('No valid episodes to consolidate; skipping.');
   }
+
+  return runResult;
+}
+
+async function handleDrive(
+  agentId: string,
+  limitRaw: string | undefined,
+  batchSizeRaw: string | undefined,
+  rootDir: string,
+) {
+  const agentRoot = join(rootDir, 'agents', agentId);
+  const runsDir = join(agentRoot, 'runs');
+  const identity = await readIdentity(agentId, rootDir);
+  await mkdir(runsDir, { recursive: true });
+
+  const runResult = await withCommandLock(agentRoot, 'drive', async () => {
+    const runId = randomUUID();
+    const runObservedAt = createTimestamp();
+    const runSummaryPath = join(runsDir, `${sanitizeForFilename(runObservedAt)}-${runId}.json`);
+    let status: RunStatus = 'success';
+    let failureReason: string | null = null;
+    let distillResult: DistillCommandResult | null = null;
+    let consolidateResult: ConsolidateCommandResult | null = null;
+
+    try {
+      distillResult = await handleDistill(agentId, limitRaw, rootDir);
+      consolidateResult = await handleConsolidate(agentId, limitRaw, batchSizeRaw, rootDir);
+      return {
+        runId,
+        status,
+        distillResult,
+        consolidateResult,
+      };
+    } catch (error) {
+      status = 'failed';
+      failureReason = error instanceof Error ? error.message : String(error);
+      throw error;
+    } finally {
+      const runSummary = {
+        run_id: runId,
+        command: 'drive',
+        agent_id: identity.agent_id,
+        limit: parsePositiveInteger('limit', limitRaw, 20),
+        batch_size: parsePositiveInteger('batch-size', batchSizeRaw, 10),
+        child_run_ids: {
+          distill: distillResult?.runId ?? null,
+          consolidate: consolidateResult?.runId ?? null,
+        },
+        distilled: distillResult?.distilledCount ?? 0,
+        distill_skipped: distillResult?.skippedCount ?? 0,
+        learning_created: consolidateResult?.learningRecords ?? 0,
+        no_learning: consolidateResult?.statusCounts.no_learning ?? 0,
+        needs_more_evidence: consolidateResult?.statusCounts.needs_more_evidence ?? 0,
+        status,
+        failure_reason: failureReason,
+        observed_at: runObservedAt,
+      };
+      await writeJsonFile(runSummaryPath, runSummary);
+    }
+  });
+
+  if (runResult.status === 'success') {
+    console.log(`Drive distilled records: ${runResult.distillResult.distilledCount}`);
+    console.log(`Drive learning records: ${runResult.consolidateResult.learningRecords}`);
+  }
 }
 
 async function main() {
@@ -1354,6 +1445,16 @@ async function main() {
     }
     await assertAgentVisible(agentId, rootDir, workspaceRoot);
     await handleConsolidate(agentId, options.get('limit'), options.get('batch-size'), rootDir);
+    return;
+  }
+
+  if (command === 'drive') {
+    const agentId = options.get('agent-id');
+    if (!agentId) {
+      throw new Error('Missing required option: --agent-id');
+    }
+    await assertAgentVisible(agentId, rootDir, workspaceRoot);
+    await handleDrive(agentId, options.get('limit'), options.get('batch-size'), rootDir);
     return;
   }
 
