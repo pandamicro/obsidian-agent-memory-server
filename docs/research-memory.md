@@ -4512,3 +4512,34 @@
 - 下一步:
   - 观察 `agentic-memory-expert` 的 pending raw_capture 是否会在后续上下文补齐后转化为可蒸馏 episode
   - 继续跟踪 `research-agent` 的后续批次，看同类高质量输入是否还能稳定产出 long-term learning
+
+## R-0141 当前 skipped raw_capture 的具体归因
+
+- 日期: 2026-04-09
+- 目标: 解释 `agentic-memory-expert` 与 `research-agent` 当前 pending raw_capture 为什么被 `distill` 判定为 `insufficient_context`
+- 输入:
+  - `agentic-memory-expert` 当前 pending raw_capture 13 条
+  - `research-agent` 当前 pending raw_capture 8 条
+  - 当前 short-term / long-term 现状
+- 动作:
+  - 对比每位 agent 的 accepted 与 pending raw_capture 主题
+  - 归纳被保留与被跳过样本的语义差异
+- 发现:
+  - 事实: `agentic-memory-expert` 被跳过的样本大多是 hooks 直写机制本身的实现/评审/文档收尾/批处理总结，例如：
+    - Task 1/2/3 的实现与验证总结
+    - 对 `distill -> consolidate` 结果的运行摘要
+    - 对整轮 memory 工作的收口总结
+  - 事实: 这些样本虽然结构完整，但语义上高度重复，且主要是“项目状态汇报”而非可迁移的操作记忆，模型倾向认为它们已经被更早的 short-term / learning 覆盖
+  - 事实: `research-agent` 被跳过的样本主要集中在 UITK / TextCore / 字体内存优化方案的多轮设计收敛与 review 迭代，例如：
+    - 同源字体重复实例化的确认
+    - `FontCatalog` / `LocalizationStyleSheetRouter` 的架构影响分析
+    - 对 `CollectResolvedFontAssets` 采集时机的风险收敛
+    - 方案文档多次更新后的总结
+  - 事实: 这些样本大多是同一主题的中间态推演或收口复述，缺少能单独形成新 episode 的“新增闭环证据”
+  - 事实: 两个 agent 的 skipped raw_capture 都保留了 `assistant_summary + candidates + session/turn anchor`，所以问题不是采集缺字段，而是“语义增量不足”
+- 决策:
+  - 当前 `insufficient_context` 的主要含义不是“完全没内容”，而是“内容已经被更早的 episode / learning 覆盖，或者只是同主题重复迭代”
+  - 对这类样本，继续放宽过滤没有收益，反而会稀释 short-term 纯度
+- 下一步:
+  - 只在后续新增明确结果、明确差异、或者新的外部证据出现时再重试这些 pending raw_capture
+  - 对重复的设计收敛类样本，优先在后续 consolidate 中做主题合并，而不是强行提升为新的 episode
