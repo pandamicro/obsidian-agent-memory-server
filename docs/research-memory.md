@@ -4485,3 +4485,30 @@
 - 下一步:
   - 继续追踪这一批 long-term 在后续 consolidate 里的幂等性与合并稳定性
   - 观察 `needs_review` episode 是否会影响 long-term 的主题纯度
+
+## R-0140 全体 agents 当前 raw_capture 批处理结果
+
+- 日期: 2026-04-09
+- 目标: 对所有共享 agents 的当前 `raw_capture` 批次执行同一条 `distill -> consolidate` 流程，并比较结果
+- 输入:
+  - `agentic-memory-expert`
+  - `research-agent`
+  - `unity-optimization-agent`
+- 动作:
+  - 对 `agentic-memory-expert` 执行真实 `distill`，随后执行真实 `consolidate`
+  - 对 `research-agent` 执行真实 `distill`，随后执行真实 `consolidate`
+  - 复核 `unity-optimization-agent` 当前已完成批次的状态，确认无需再处理
+- 发现:
+  - 事实: `agentic-memory-expert` 当前 `raw_capture=24`，`distill` 产出 `11` 条 short-term，`13` 条因 `insufficient_context` 被跳过
+  - 事实: `agentic-memory-expert` 的真实 `consolidate` 执行了 `11` 条 episode、`3` 个 batch，结果为 `needs_more_evidence=3`，未产出 long-term
+  - 事实: `research-agent` 当前 `raw_capture=16`，`distill` 产出 `7` 条 short-term，`6` 条因 `insufficient_context` 被跳过
+  - 事实: `research-agent` 的真实 `consolidate` 执行了 `7` 条 episode、`2` 个 batch，结果为 `learning_created=1`，`needs_more_evidence=1`
+  - 事实: `research-agent` 新增的 long-term 记忆聚焦于 distillation pipeline 在 streaming fallback 后应重新触发真实 provider retry 的行为约束
+  - 事实: `unity-optimization-agent` 这轮没有新的待处理 `raw_capture`
+  - 事实: 当前留存的 skipped `raw_capture` 仍会作为 pending 继续存在，说明这轮批处理不是“清空所有历史输入”，而是按质量门槛完成可蒸馏部分
+- 决策:
+  - 确认全体 agents 的当前 raw batch 已经被实际尝试，不再停留在链路假设层
+  - 目前最有价值的增量仍然来自高质量 hook flush 与可解释的证据锚点，而不是继续放宽低质量输入的准入
+- 下一步:
+  - 观察 `agentic-memory-expert` 的 pending raw_capture 是否会在后续上下文补齐后转化为可蒸馏 episode
+  - 继续跟踪 `research-agent` 的后续批次，看同类高质量输入是否还能稳定产出 long-term learning
