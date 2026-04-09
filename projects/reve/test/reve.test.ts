@@ -843,6 +843,16 @@ test('distill sends conservative schema with required reason and nullable episod
 
     const episodeProperty = schema.properties?.episode as { anyOf?: Array<Record<string, unknown>> };
     assert(Array.isArray(episodeProperty.anyOf));
+    const episodeSchema = episodeProperty.anyOf?.find((entry) => entry.type === 'object');
+    assert(episodeSchema);
+    if (episodeSchema) {
+      const episodeProperties = episodeSchema.properties as Record<string, { enum?: string[] }>;
+      assert.deepEqual(episodeProperties.event_type?.enum, ['captured']);
+      assert.deepEqual(episodeProperties.object_kind?.enum, ['episode']);
+      const qualitySchema = episodeSchema.properties?.quality as { properties?: Record<string, { enum?: string[] }> };
+      assert.deepEqual(episodeProperties.polarity?.enum, ['supporting', 'conflicting', 'insufficient']);
+      assert.deepEqual(qualitySchema.properties?.status?.enum, ['pass', 'needs_review', 'rejected']);
+    }
     assert(episodeProperty.anyOf?.some((entry) => entry.type === 'null'));
   } finally {
     await server.close();

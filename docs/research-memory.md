@@ -4401,3 +4401,61 @@
   - hooks 直写 raw_capture 这一轮实现与文档现已形成闭环
 - 下一步:
   - 进入下一轮真实样本验证，检查新采集批次是否显著提升 `hydration_attempted` 与 `Episode` 质量
+
+## R-0137 unity-optimization-agent 真实蒸馏失败根因
+
+- 日期: 2026-04-09
+- 目标: 解释 `unity-optimization-agent` 新增 `raw_capture` 仍未产出 short-term memory 的直接原因
+- 输入:
+  - `agents/unity-optimization-agent/memory/raw-capture/2026-04-08T14-23-09.048Z-7893e867-c465-478d-94a2-8f0759f0d345.json`
+  - `agents/unity-optimization-agent/memory/raw-capture/2026-04-09T03-02-21.390Z-fa21f844-906a-4532-80e6-1f6645c9447e.json`
+  - `projects/reve/src/cli.ts`
+  - `agents/unity-optimization-agent/runs/2026-04-09T06-43-03.187Z-b15ca784-81b8-45b2-bec2-5acac03abacd.json`
+- 动作:
+  - 复核 8 条新 `raw_capture`
+  - 运行真实 `distill`，结果为 `Distilled short-term records: 0`，`Item errors: 8`
+  - 追踪 `last_item_error`
+- 发现:
+  - 事实: 8 条新 `raw_capture` 都是结构化 `hook_flush`
+  - 事实: 8 条都具备 `session_id + turn_id + assistant_summary + candidates`
+  - 事实: `distill` 失败点不是 prefilter，也不是 hydration，而是 provider 输出的 `episode.event_type` 被生成成了 `code_review_finding`
+  - 事实: 本地校验要求 `event_type` 必须是 `captured`
+  - 事实: 根因是 `distill` 的 response schema 对 `event_type / object_kind` 约束过松，模型在 `code_review_finding` 这类内容上被语义带偏
+- 决策:
+  - 收紧 `distill` response schema，把 `event_type` 固定为 `captured`，把 `object_kind` 固定为 `episode`
+  - 在 prompt 中明确这两个字段是常量，不允许模型自由发挥
+  - 为该 schema 增加回归测试
+- 下一步:
+  - 重新跑 `projects/reve` 测试
+  - 再对 `unity-optimization-agent` 重跑真实 `distill`
+
+## R-0138 unity-optimization-agent short-term 真实蒸馏成功
+
+- 日期: 2026-04-09
+- 目标: 验证 schema 收紧后，`unity-optimization-agent` 的 8 条新 `raw_capture` 是否可以全部蒸馏为 short-term memory
+- 输入:
+  - `projects/reve/src/cli.ts`
+  - `projects/reve/test/reve.test.ts`
+  - `agents/unity-optimization-agent/memory/raw-capture` 中的 8 条新 `hook_flush`
+  - `agents/unity-optimization-agent/runs/2026-04-09T06-52-47.932Z-e78f5a69-f3d8-4367-bdfa-deda8424171b.json`
+- 动作:
+  - 将 `distill` response schema 收紧为固定字段：
+    - `event_type = captured`
+    - `object_kind = episode`
+    - `polarity = supporting | conflicting | insufficient`
+    - `quality.status = pass | needs_review | rejected`
+  - 补充回归测试，确保 schema 不再允许模型自由发挥这些枚举字段
+  - 重新运行真实 `distill`
+- 发现:
+  - 事实: 最终运行 `Distilled short-term records: 8`
+  - 事实: `Skipped raw captures: 0`
+  - 事实: `Item errors: 0`
+  - 事实: 8 条 short-term 的质量分布为 `pass = 5`、`needs_review = 3`
+  - 事实: 7 条来源于前一轮已验证的高质量 hook flush，最后 1 条是此前因 `polarity` 漏口被拒绝的 pending 记录
+  - 事实: 当前没有 pending `raw_capture`
+- 决策:
+  - 确认 `unity-optimization-agent` 这一批 `raw_capture` 已达到可蒸馏为 short-term 的最低质量门槛
+  - 当前瓶颈不再是链路连通性，而是短期记忆本身的质量分层与后续聚合策略
+- 下一步:
+  - 观察这些 short-term 是否能在后续 consolidate 中形成稳定 `Learning`
+  - 继续评估是否需要进一步收紧 `needs_review` 的准入边界
