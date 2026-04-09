@@ -4459,3 +4459,29 @@
 - 下一步:
   - 观察这些 short-term 是否能在后续 consolidate 中形成稳定 `Learning`
   - 继续评估是否需要进一步收紧 `needs_review` 的准入边界
+
+## R-0139 unity-optimization-agent 真实 consolidate 产出长期记忆
+
+- 日期: 2026-04-09
+- 目标: 验证 `unity-optimization-agent` 的 8 条 short-term 是否能在真实 `codex` provider 下形成长期记忆
+- 输入:
+  - `agents/unity-optimization-agent/memory/short-term` 中的 8 条 episode
+  - `agents/unity-optimization-agent/memory/long-term/2026-04-09T06-57-21.723Z-2f5e25b5-3a2e-4163-bd87-afaaec528e0c.json`
+  - `agents/unity-optimization-agent/runs/2026-04-09T06-56-52.555Z-f3c114fd-4ec6-47c0-9ec0-0984e8121068.json`
+- 动作:
+  - 显式使用真实 provider 执行 `consolidate`
+  - 维持 `limit=8`、`batch-size=4`
+  - 复核生成的 long-term 记录与 run summary
+- 发现:
+  - 事实: 真实 `consolidate` 运行结果为 `Learning records: 1`
+  - 事实: `Episodes consolidated: 8`
+  - 事实: `Batches processed: 2`
+  - 事实: 生成的新 `Learning` 质量为 `pass`
+  - 事实: 该 `Learning` 的主题聚焦于 Unity localization / UITK + TextCore 字体在语言切换下的引用保留问题
+  - 事实: 当前 long-term 目录已有 3 条记录，其中 1 条是这次真实 provider 新增，另外 2 条为前一轮 mock 结果
+- 决策:
+  - 确认 `unity-optimization-agent` 这批 short-term 不仅能落盘，而且能在真实 provider 下稳定推进到 long-term
+  - 下一步优先观察不同主题的短期记忆是否会持续聚合成高质量 `Learning`
+- 下一步:
+  - 继续追踪这一批 long-term 在后续 consolidate 里的幂等性与合并稳定性
+  - 观察 `needs_review` episode 是否会影响 long-term 的主题纯度
